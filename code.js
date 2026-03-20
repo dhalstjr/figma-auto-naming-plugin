@@ -143,15 +143,37 @@ async function openUI(targetFrame) {
         }, 800);
       } catch(e){}
     }
+
+    // 부모를 거슬러 올라가며 전체 틀이 찌그러지지 않도록 레이아웃 높이/넘침 방어를 강제로 재계산합니다.
+    function applyRecursiveLayoutGuard(startNode) {
+      let current = startNode;
+      while (current && current.type !== "PAGE") {
+        if (current.type === "FRAME" && current.layoutMode !== "NONE") {
+           try {
+              if (current.layoutMode === "VERTICAL") {
+                 current.primaryAxisSizingMode = "AUTO"; // 세로 높이 Hug contents 보장
+                 current.clipsContent = true; // 넘침 방지
+              } else if (current.layoutMode === "HORIZONTAL") {
+                 current.counterAxisSizingMode = "AUTO"; // 세로 높이 교차축 Hug 보장
+                 current.clipsContent = true;
+              }
+           } catch(e){}
+        }
+        if (current === targetFrame) break; // 플러그인 실행 루트 캔버스 범위까지만
+        current = current.parent;
+      }
+    }
     
     function applyLayoutGuard(node) {
       try {
-        if (node.type === "TEXT") node.textAutoResize = "HEIGHT";
-        if (node.parent && node.parent.layoutMode !== "NONE") {
-           if (node.parent.layoutMode === "VERTICAL") node.parent.primaryAxisSizingMode = "AUTO";
-           if (node.parent.layoutMode === "HORIZONTAL") node.parent.counterAxisSizingMode = "AUTO";
-           node.parent.clipsContent = true;
+        if (node.type === "TEXT") {
+           node.textAutoResize = "HEIGHT";
+           // 자기가 삐져나가지 않도록 STRETCH 허용
+           if (node.parent && node.parent.layoutMode === "VERTICAL") {
+              node.layoutAlign = "STRETCH";
+           }
         }
+        if (node.parent) applyRecursiveLayoutGuard(node.parent);
       } catch(e){}
     }
 
@@ -276,17 +298,21 @@ async function openUI(targetFrame) {
         if (targetNode && targetNode.type === "FRAME" && targetNode.parent) {
           try {
             const parent = targetNode.parent;
+            
+            // 💡 세로로 나열되도록 속성 강제 변환 병합
+            if (parent.layoutMode === "HORIZONTAL") {
+               parent.layoutMode = "VERTICAL";
+            }
+            
             const clone = targetNode.clone();
             const index = parent.children.indexOf(targetNode);
             parent.insertChild(index + 1, clone);
             clone.visible = true; 
             
-            if (parent.layoutMode === "VERTICAL" || parent.layoutMode === "HORIZONTAL") {
-               parent.primaryAxisSizingMode = "AUTO"; 
-               parent.clipsContent = true; 
-            }
+            // 찌그러짐 방지를 위해 재귀적으로 상단 컨테이너들의 Hug Properties 강제복원
+            applyRecursiveLayoutGuard(parent);
 
-            figma.notify(`➕ 항목이 성공적으로 삽입되었습니다.`);
+            figma.notify(`➕ 항목이 성공적으로 복제/삽입 되었습니다.`);
             figma.ui.postMessage({ type: 'init-fields', groups: await getGroupedFields() });
             
             figma.currentPage.selection = [clone];
@@ -301,6 +327,7 @@ async function openUI(targetFrame) {
         const targetNode = figma.getNodeById(msg.id);
         if (targetNode && targetNode.type === "FRAME") {
            targetNode.visible = false;
+           applyRecursiveLayoutGuard(targetNode.parent);
            figma.notify(`👁️ 항목이 삭제(숨김) 처리되어 휴지통으로 이동했습니다.`);
            figma.ui.postMessage({ type: 'init-fields', groups: await getGroupedFields() });
         }
@@ -310,6 +337,7 @@ async function openUI(targetFrame) {
         const targetNode = figma.getNodeById(msg.id);
         if (targetNode && targetNode.type === "FRAME") {
            targetNode.visible = true;
+           applyRecursiveLayoutGuard(targetNode.parent);
            figma.notify(`🚀 항목이 성공적으로 복구되었습니다.`);
            figma.ui.postMessage({ type: 'init-fields', groups: await getGroupedFields() });
            figma.currentPage.selection = [targetNode];
@@ -321,7 +349,9 @@ async function openUI(targetFrame) {
         const targetNode = figma.getNodeById(msg.id);
         if (targetNode && targetNode.type === "FRAME") {
           try {
+            const tempParent = targetNode.parent;
             targetNode.remove();
+            applyRecursiveLayoutGuard(tempParent);
             figma.notify(`🗑️ 해당 원본이 완전히 파기(영구 삭제)되었습니다.`);
             figma.ui.postMessage({ type: 'init-fields', groups: await getGroupedFields() });
           } catch(e) {
@@ -405,7 +435,6 @@ async function openUI(targetFrame) {
             node.fills = newFills;
             highlightNode(node);
             
-            // 썸네일 새로고침
             figma.ui.postMessage({ type: 'init-fields', groups: await getGroupedFields() });
           } catch(e) {}
         }
