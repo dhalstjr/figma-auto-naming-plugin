@@ -95,7 +95,33 @@ function main() {
     });
 
     // --------------------------------------------------------
-    // 4. 성공 알림
+    // 4. 오토레이아웃 (Frame) 네이밍 규칙 적용
+    // --------------------------------------------------------
+    const layoutNodes = targetFrame.findAll(node => {
+      // 프레임 타입이면서 오토레이아웃(NONE이 아님)이 적용된 경우
+      return node.type === "FRAME" && node.layoutMode !== "NONE" && isEditableNode(node);
+    });
+
+    layoutNodes.sort((a, b) => {
+      const yA = a.absoluteBoundingBox ? a.absoluteBoundingBox.y : a.y;
+      const yB = b.absoluteBoundingBox ? b.absoluteBoundingBox.y : b.y;
+      if (Math.abs(yA - yB) > 1) return yA - yB;
+      
+      const xA = a.absoluteBoundingBox ? a.absoluteBoundingBox.x : a.x;
+      const xB = b.absoluteBoundingBox ? b.absoluteBoundingBox.x : b.x;
+      return xA - xB;
+    });
+
+    layoutNodes.forEach((node, index) => {
+      try {
+        node.name = `Layout_${index + 1}`; 
+      } catch(e) {
+        console.warn("Failed to rename layout node:", e);
+      }
+    });
+
+    // --------------------------------------------------------
+    // 5. 성공 알림
     // --------------------------------------------------------
     figma.notify("템플릿 레이어 자동 네이밍이 완료되었습니다! 🎉");
 
