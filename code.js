@@ -1,8 +1,6 @@
 async function main() {
   try {
     const selection = figma.currentPage.selection;
-    
-    // 1. 선택 유효성 검사
     if (
       selection.length === 0 || 
       !(selection[0].type === "FRAME" || selection[0].type === "COMPONENT" || selection[0].type === "INSTANCE")
@@ -13,8 +11,6 @@ async function main() {
     }
 
     const targetFrame = selection[0];
-
-    // 스캔: 이 템플릿이 이미 1단계 진행이 되었는지 판단
     const isFormatted = targetFrame.findOne(n => n.name.startsWith("#Text") || n.name.startsWith("@Image") || n.name.startsWith("Layout_"));
     
     if (!isFormatted) {
@@ -22,7 +18,6 @@ async function main() {
       await runFormatting(targetFrame);
     }
     
-    // UI 오픈 (통합)
     openUI(targetFrame);
 
   } catch (err) {
@@ -108,7 +103,7 @@ async function runFormatting(targetFrame) {
             layoutNodes.push(frame);
           } catch(e) {}
         } else {
-          layoutNodes.push(frame); // 이미 오토레이아웃
+          layoutNodes.push(frame);
         }
       }
     });
@@ -133,7 +128,33 @@ async function runFormatting(targetFrame) {
 }
 
 
-function openUI(targetFrame) {
+async function openUI(targetFrame) {
+    function highlightNode(node) {
+      try {
+        const oldStrokes = [...node.strokes];
+        const oldWeight = node.strokeWeight;
+        node.strokes = [{type: 'SOLID', color: {r:0.09, g:0.62, b:0.98}}]; 
+        node.strokeWeight = Math.max(3, oldWeight * 2);
+        setTimeout(() => {
+          try {
+            node.strokes = oldStrokes;
+            node.strokeWeight = oldWeight;
+          } catch(e){}
+        }, 800);
+      } catch(e){}
+    }
+    
+    function applyLayoutGuard(node) {
+      try {
+        if (node.type === "TEXT") node.textAutoResize = "HEIGHT";
+        if (node.parent && node.parent.layoutMode !== "NONE") {
+           if (node.parent.layoutMode === "VERTICAL") node.parent.primaryAxisSizingMode = "AUTO";
+           if (node.parent.layoutMode === "HORIZONTAL") node.parent.counterAxisSizingMode = "AUTO";
+           node.parent.clipsContent = true;
+        }
+      } catch(e){}
+    }
+
     function sortByCoordinates(a, b) {
       const yA = a.absoluteBoundingBox ? a.absoluteBoundingBox.y : a.y;
       const yB = b.absoluteBoundingBox ? b.absoluteBoundingBox.y : b.y;
@@ -143,15 +164,17 @@ function openUI(targetFrame) {
       return xA - xB;
     }
 
-    // 데이터 패치: Get updated groups
-    function getGroupedFields() {
-      const currentTexts = targetFrame.findAll(n => n.type === "TEXT");
-      currentTexts.sort(sortByCoordinates);
+    async function getGroupedFields() {
+      const targetItems = targetFrame.findAll(n => 
+        n.name.startsWith("#") || n.name.startsWith("@") || n.name === "#Title"
+      );
+      targetItems.sort(sortByCoordinates);
 
       const fieldGroupsMap = {};
-      for (const t of currentTexts) {
+      
+      for (const t of targetItems) {
         let p = t.parent;
-        let groupName = "텍스트 기본 요소";
+        let groupName = "기본 템플릿 컴포넌트";
         let groupId = targetFrame.id; 
         
         while (p && p !== targetFrame.parent) {
@@ -163,140 +186,247 @@ function openUI(targetFrame) {
           p = p.parent;
         }
         
-        if (!fieldGroupsMap[groupId]) {
-          fieldGroupsMap[groupId] = { groupId, groupName, fields: [] };
+        const parentNode = figma.getNodeById(groupId);
+        let layoutDir = "";
+        let isVisible = parentNode ? parentNode.visible : true;
+        
+        if (parentNode && parentNode.layoutMode) {
+           if (parentNode.layoutMode === "VERTICAL") layoutDir = " [세로 정렬]";
+           else if (parentNode.layoutMode === "HORIZONTAL") layoutDir = " [가로 정렬]";
         }
         
-        // Smart Mapping UX 및 폰트 사이즈
-        let semanticLabel = t.characters.substring(0, 16).replace(/\n/g, ' ');
-        if (t.characters.length > 16) semanticLabel += "...";
-        if (t.name === "#Title") semanticLabel = `👑 ` + semanticLabel;
-        else if (t.name === "#SubTitle") semanticLabel = `🔹 ` + semanticLabel;
-
-        let fontSize = t.fontSize;
-        if (fontSize === figma.mixed) {
-          fontSize = t.getRangeFontSize(0, 1) || 14;
+        if (!fieldGroupsMap[groupId]) {
+          fieldGroupsMap[groupId] = { 
+            groupId, 
+            groupName: groupName + layoutDir, 
+            visible: isVisible,
+            fields: [] 
+          };
         }
+        
+        if (t.type === "TEXT") {
+          let semanticLabel = t.characters.substring(0, 16).replace(/\n/g, ' ');
+          if (t.characters.length > 16) semanticLabel += "...";
+          if (t.name === "#Title") semanticLabel = `👑 ` + semanticLabel;
+          else if (t.name === "#SubTitle") semanticLabel = `🔹 ` + semanticLabel;
 
-        fieldGroupsMap[groupId].fields.push({
-          id: t.id,
-          name: t.name,
-          semanticLabel: semanticLabel || "(비어있음)",
-          characters: t.characters,
-          fontSize: Math.round(Number(fontSize) * 10) / 10
-        });
+          let fontSz = t.fontSize;
+          if (fontSz === figma.mixed) fontSz = t.getRangeFontSize(0, 1) || 14;
+          
+          let fontWeight = "Regular";
+          if (t.fontName !== figma.mixed) fontWeight = t.fontName.style;
+          else {
+             const fn = t.getRangeFontName(0, 1);
+             if (fn) fontWeight = fn.style;
+          }
+          
+          let fillHex = "#000000";
+          if (t.fills !== figma.mixed && t.fills.length > 0 && t.fills[0].type === "SOLID") {
+             const r = Math.round(t.fills[0].color.r * 255);
+             const g = Math.round(t.fills[0].color.g * 255);
+             const b = Math.round(t.fills[0].color.b * 255);
+             fillHex = "#" + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).padStart(6, '0');
+          }
+
+          fieldGroupsMap[groupId].fields.push({
+            id: t.id,
+            name: t.name,
+            type: "TEXT",
+            semanticLabel: semanticLabel || "(비어있음)",
+            characters: t.characters,
+            fontSize: Math.round(Number(fontSz) * 10) / 10,
+            fontWeight: fontWeight,
+            fillColor: fillHex
+          });
+        } else {
+          let thumbBase64 = null;
+          try {
+             const bytes = await t.exportAsync({ format: 'PNG', constraint: { type: 'WIDTH', value: 70 } });
+             thumbBase64 = figma.base64Encode(bytes);
+          } catch(e) {}
+          
+          fieldGroupsMap[groupId].fields.push({
+            id: t.id,
+            name: t.name,
+            type: "IMAGE",
+            semanticLabel: `🖼️ [이미지 변경] ` + t.name,
+            thumbnail: thumbBase64 ? 'data:image/png;base64,' + thumbBase64 : null
+          });
+        }
       }
       return Object.values(fieldGroupsMap);
     }
 
-    figma.showUI(__html__, { width: 360, height: 640, themeColors: true });
-    figma.ui.postMessage({ type: 'init-fields', groups: getGroupedFields() });
+    figma.showUI(__html__, { width: 380, height: 680, themeColors: true });
+    figma.ui.postMessage({ type: 'init-fields', groups: await getGroupedFields() });
 
     figma.ui.onmessage = async (msg) => {
       
-      // 1. 캔버스 자동 이동 (Focus Mode)
       if (msg.type === 'focus-node') {
         const node = figma.getNodeById(msg.id);
-        if (node) {
+        if (node && node.visible) {
           figma.currentPage.selection = [node];
           figma.viewport.scrollAndZoomIntoView([node]);
-          
-          try {
-             // 포커스 시 강조 표시 (임시 스트로크 적용)
-             const oldStrokes = [...node.strokes];
-             const oldWeight = node.strokeWeight;
-             node.strokes = [{type: 'SOLID', color: {r:0.09, g:0.62, b:0.98}}]; // Figma Blue
-             node.strokeWeight = Math.max(3, oldWeight * 2);
-             setTimeout(() => {
-                try {
-                  node.strokes = oldStrokes;
-                  node.strokeWeight = oldWeight;
-                } catch(e){}
-             }, 800);
-          } catch(e){}
+          highlightNode(node);
         }
       }
 
-      // 2. Repeater (행 복제)
       if (msg.type === 'clone-group') {
-        const nodeToClone = figma.getNodeById(msg.id);
-        if (nodeToClone && nodeToClone.type === "FRAME" && nodeToClone.parent) {
+        const targetNode = figma.getNodeById(msg.id);
+        if (targetNode && targetNode.type === "FRAME" && targetNode.parent) {
           try {
-            const clone = nodeToClone.clone();
-            const index = nodeToClone.parent.children.indexOf(nodeToClone);
-            nodeToClone.parent.insertChild(index + 1, clone);
-            figma.notify(`➕ 추가되었습니다: 행이 복제 완료!`);
-            figma.ui.postMessage({ type: 'init-fields', groups: getGroupedFields() });
+            const parent = targetNode.parent;
+            const clone = targetNode.clone();
+            const index = parent.children.indexOf(targetNode);
+            parent.insertChild(index + 1, clone);
+            clone.visible = true; 
+            
+            if (parent.layoutMode === "VERTICAL" || parent.layoutMode === "HORIZONTAL") {
+               parent.primaryAxisSizingMode = "AUTO"; 
+               parent.clipsContent = true; 
+            }
+
+            figma.notify(`➕ 항목이 성공적으로 삽입되었습니다.`);
+            figma.ui.postMessage({ type: 'init-fields', groups: await getGroupedFields() });
+            
+            figma.currentPage.selection = [clone];
+            figma.viewport.scrollAndZoomIntoView([clone]);
           } catch(e) {
-            figma.notify("인스턴스 등 제한된 영역 구조에서는 행을 통째로 복제할 수 없습니다.", {error:true});
+            figma.notify("오류가 발생했습니다 (인스턴스 등 제한된 템플릿에서는 복제 불가).", {error:true});
           }
         }
       }
 
-      // 3. Repeater (행 삭제)
-      if (msg.type === 'delete-group') {
-        const nodeToDelete = figma.getNodeById(msg.id);
-        if (nodeToDelete && nodeToDelete.type === "FRAME") {
+      if (msg.type === 'soft-delete-group') {
+        const targetNode = figma.getNodeById(msg.id);
+        if (targetNode && targetNode.type === "FRAME") {
+           targetNode.visible = false;
+           figma.notify(`👁️ 항목이 삭제(숨김) 처리되어 휴지통으로 이동했습니다.`);
+           figma.ui.postMessage({ type: 'init-fields', groups: await getGroupedFields() });
+        }
+      }
+
+      if (msg.type === 'restore-group') {
+        const targetNode = figma.getNodeById(msg.id);
+        if (targetNode && targetNode.type === "FRAME") {
+           targetNode.visible = true;
+           figma.notify(`🚀 항목이 성공적으로 복구되었습니다.`);
+           figma.ui.postMessage({ type: 'init-fields', groups: await getGroupedFields() });
+           figma.currentPage.selection = [targetNode];
+           figma.viewport.scrollAndZoomIntoView([targetNode]);
+        }
+      }
+
+      if (msg.type === 'hard-delete-group') {
+        const targetNode = figma.getNodeById(msg.id);
+        if (targetNode && targetNode.type === "FRAME") {
           try {
-            const tempName = nodeToDelete.name;
-            nodeToDelete.remove();
-            figma.notify(`🗑️ [${tempName}] 행이 안전하게 삭제되었습니다.`);
-            figma.ui.postMessage({ type: 'init-fields', groups: getGroupedFields() });
+            targetNode.remove();
+            figma.notify(`🗑️ 해당 원본이 완전히 파기(영구 삭제)되었습니다.`);
+            figma.ui.postMessage({ type: 'init-fields', groups: await getGroupedFields() });
           } catch(e) {
-            figma.notify("인스턴스 메인 컴포넌트 내부 등에서는 강제로 삭제할 수 없습니다.", {error:true});
+            figma.notify("메인 컴포넌트나 읽기 전용 구조에서는 파기할 수 없습니다.", {error:true});
           }
         }
       }
 
-      // 4. 실시간 폰트 사이즈 업데이트
       if (msg.type === 'update-font-size') {
         const node = figma.getNodeById(msg.id);
         if (node && node.type === "TEXT") {
           try {
             if (node.hasMissingFont) {
-               figma.notify("폰트 누락 오류로 인해 글자 크기를 강제 적용할 수 없습니다.", {error: true});
+               figma.notify("폰트 누락 제약", {error: true});
             } else {
                const len = node.characters.length;
                if (len > 0) {
-                 // 폰트 강제 로드 (에러 방어)
                  const fontsToLoad = node.getRangeAllFontNames(0, len);
                  for (const f of fontsToLoad) { await figma.loadFontAsync(f); }
-                 
-                 // 전체 문장에 새 크기 지정
                  node.setRangeFontSize(0, len, msg.size);
                } else {
                  node.fontSize = msg.size;
                }
+               applyLayoutGuard(node);
+               highlightNode(node);
+            }
+          } catch(e) {}
+        }
+      }
+      
+      if (msg.type === 'update-font-style') {
+        const node = figma.getNodeById(msg.id);
+        if (node && node.type === "TEXT") {
+          try {
+            const font = node.fontName === figma.mixed ? node.getRangeFontName(0, 1) : node.fontName;
+            if (font && !node.hasMissingFont) {
+               const newFont = { family: font.family, style: msg.weight };
+               await figma.loadFontAsync(newFont);
+               const len = node.characters.length;
+               if (len > 0) node.setRangeFontName(0, len, newFont);
+               else node.fontName = newFont;
+               applyLayoutGuard(node);
+               highlightNode(node);
             }
           } catch(e) {
-            console.warn("폰트 크기 변경 실패:", e);
+             figma.notify("해당 서체에서는 지원하지 않는 굵기입니다.", {error: true});
           }
         }
       }
 
-      // 5. 텍스트 일괄 교체 & 기존 인라인 스타일 보존
+      if (msg.type === 'update-color') {
+        const node = figma.getNodeById(msg.id);
+        if (node && node.type === "TEXT") {
+          try {
+            const hex = msg.color;
+            const r = parseInt(hex.substr(1, 2), 16) / 255;
+            const g = parseInt(hex.substr(3, 2), 16) / 255;
+            const b = parseInt(hex.substr(5, 2), 16) / 255;
+            const len = node.characters.length;
+            if (len > 0) node.setRangeFills(0, len, [{type: 'SOLID', color: {r, g, b}}]);
+            else node.fills = [{type: 'SOLID', color: {r, g, b}}];
+            highlightNode(node);
+          } catch(e) {}
+        }
+      }
+
+      if (msg.type === 'update-image') {
+        const node = figma.getNodeById(msg.id);
+        if (node && 'fills' in node) {
+          try {
+            const newImage = figma.createImage(msg.bytes);
+            const newFills = [...node.fills];
+            let replaced = false;
+            for (let i = 0; i < newFills.length; i++) {
+               if (newFills[i].type === "IMAGE") {
+                 newFills[i] = { type: "IMAGE", scaleMode: "FILL", imageHash: newImage.hash };
+                 replaced = true; break;
+               }
+            }
+            if (!replaced) newFills.push({ type: "IMAGE", scaleMode: "FILL", imageHash: newImage.hash });
+            node.fills = newFills;
+            highlightNode(node);
+            
+            // 썸네일 새로고침
+            figma.ui.postMessage({ type: 'init-fields', groups: await getGroupedFields() });
+          } catch(e) {}
+        }
+      }
+
       if (msg.type === 'update-texts') {
         let successCount = 0;
         for (const update of msg.updates) {
           const node = figma.getNodeById(update.id);
           if (node && node.type === "TEXT" && node.characters !== update.characters) {
             try {
-              if (node.hasMissingFont) {
-                 console.warn("단락 폰트 누락 오류 방지:", node.name);
-                 continue; 
-              }
-
+              if (node.hasMissingFont) continue; 
+              
               const len = node.characters.length;
               if (len > 0) {
                  const styledSegments = node.getStyledTextSegments(['fontName', 'fontSize', 'fontWeight', 'fills', 'letterSpacing', 'lineHeight']);
-                 
                  const fontsToLoad = node.getRangeAllFontNames(0, len);
                  for (const f of fontsToLoad) { await figma.loadFontAsync(f); }
                  
-                 // 교체
                  node.characters = update.characters; 
                  
-                 // 캐싱된 혼합 스타일들을 새로 들어간 글자 위치에 스케일링하여 덮어씌움
                  const newLen = update.characters.length;
                  let currPos = 0;
                  for (const seg of styledSegments) {
@@ -304,10 +434,7 @@ function openUI(targetFrame) {
                    const segLen = seg.end - seg.start;
                    const newEnd = Math.min(newLen, currPos + segLen);
                    
-                   if (seg.fontName) {
-                     await figma.loadFontAsync(seg.fontName);
-                     node.setRangeFontName(currPos, newEnd, seg.fontName);
-                   }
+                   if (seg.fontName) { await figma.loadFontAsync(seg.fontName); node.setRangeFontName(currPos, newEnd, seg.fontName); }
                    if (seg.fills) node.setRangeFills(currPos, newEnd, seg.fills);
                    if (seg.fontSize) node.setRangeFontSize(currPos, newEnd, seg.fontSize);
                    if (seg.letterSpacing) node.setRangeLetterSpacing(currPos, newEnd, seg.letterSpacing);
@@ -319,13 +446,13 @@ function openUI(targetFrame) {
                  node.characters = update.characters;
               }
               
+              applyLayoutGuard(node);
+              highlightNode(node);
               successCount++;
-            } catch(e) {
-              console.warn("텍스트 교체 실패:", e);
-            }
+            } catch(e) {}
           }
         }
-        figma.notify(`✨ 디자인 텍스트 ${successCount}곳이 퍼펙트 매칭 완료되었습니다!`);
+        figma.notify(`✨ 텍스트 ${successCount}곳이 퍼펙트 매칭 완료되었습니다!`);
       }
       
       if (msg.type === 'close') {
@@ -334,5 +461,4 @@ function openUI(targetFrame) {
     };
 }
 
-// 부트스트랩 호출
 main();
