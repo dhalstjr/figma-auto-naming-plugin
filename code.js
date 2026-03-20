@@ -14,7 +14,7 @@ async function main() {
 
     const targetFrame = selection[0];
 
-    // 스캔: 이 템플릿이 이미 1단계 진행(오토레이아웃 네이밍)이 되었는지 판단
+    // 스캔: 이 템플릿이 이미 1단계 진행이 되었는지 판단
     const isFormatted = targetFrame.findOne(n => n.name.startsWith("#Text") || n.name.startsWith("@Image") || n.name.startsWith("Layout_"));
     
     if (!isFormatted) {
@@ -68,7 +68,6 @@ async function runFormatting(targetFrame) {
     const titleNode = textNodes.length > 0 ? textNodes.shift() : null;
     const subtitleNode = textNodes.length > 0 ? textNodes.shift() : null;
 
-    // 인스턴스 내부의 레이어는 이름 변경 거부(Error)가 나지만 상관없음. try/catch로 패스
     if (titleNode) { try { titleNode.name = "#Title"; } catch(e){} }
     if (subtitleNode) { try { subtitleNode.name = "#SubTitle"; } catch(e){} }
 
@@ -168,27 +167,34 @@ function openUI(targetFrame) {
           fieldGroupsMap[groupId] = { groupId, groupName, fields: [] };
         }
         
-        // Smart Mapping UX: UI 라벨에 현재 콘텐츠 미리보기 노출
+        // Smart Mapping UX 및 폰트 사이즈
         let semanticLabel = t.characters.substring(0, 16).replace(/\n/g, ' ');
         if (t.characters.length > 16) semanticLabel += "...";
         if (t.name === "#Title") semanticLabel = `👑 ` + semanticLabel;
         else if (t.name === "#SubTitle") semanticLabel = `🔹 ` + semanticLabel;
 
+        let fontSize = t.fontSize;
+        if (fontSize === figma.mixed) {
+          fontSize = t.getRangeFontSize(0, 1) || 14;
+        }
+
         fieldGroupsMap[groupId].fields.push({
           id: t.id,
           name: t.name,
           semanticLabel: semanticLabel || "(비어있음)",
-          characters: t.characters
+          characters: t.characters,
+          fontSize: Math.round(Number(fontSize) * 10) / 10
         });
       }
       return Object.values(fieldGroupsMap);
     }
 
-    figma.showUI(__html__, { width: 360, height: 620, themeColors: true });
+    figma.showUI(__html__, { width: 360, height: 640, themeColors: true });
     figma.ui.postMessage({ type: 'init-fields', groups: getGroupedFields() });
 
     figma.ui.onmessage = async (msg) => {
       
+      // 1. 캔버스 자동 이동 (Focus Mode)
       if (msg.type === 'focus-node') {
         const node = figma.getNodeById(msg.id);
         if (node) {
@@ -211,6 +217,7 @@ function openUI(targetFrame) {
         }
       }
 
+      // 2. Repeater (행 복제)
       if (msg.type === 'clone-group') {
         const nodeToClone = figma.getNodeById(msg.id);
         if (nodeToClone && nodeToClone.type === "FRAME" && nodeToClone.parent) {
@@ -226,6 +233,48 @@ function openUI(targetFrame) {
         }
       }
 
+      // 3. Repeater (행 삭제)
+      if (msg.type === 'delete-group') {
+        const nodeToDelete = figma.getNodeById(msg.id);
+        if (nodeToDelete && nodeToDelete.type === "FRAME") {
+          try {
+            const tempName = nodeToDelete.name;
+            nodeToDelete.remove();
+            figma.notify(`🗑️ [${tempName}] 행이 안전하게 삭제되었습니다.`);
+            figma.ui.postMessage({ type: 'init-fields', groups: getGroupedFields() });
+          } catch(e) {
+            figma.notify("인스턴스 메인 컴포넌트 내부 등에서는 강제로 삭제할 수 없습니다.", {error:true});
+          }
+        }
+      }
+
+      // 4. 실시간 폰트 사이즈 업데이트
+      if (msg.type === 'update-font-size') {
+        const node = figma.getNodeById(msg.id);
+        if (node && node.type === "TEXT") {
+          try {
+            if (node.hasMissingFont) {
+               figma.notify("폰트 누락 오류로 인해 글자 크기를 강제 적용할 수 없습니다.", {error: true});
+            } else {
+               const len = node.characters.length;
+               if (len > 0) {
+                 // 폰트 강제 로드 (에러 방어)
+                 const fontsToLoad = node.getRangeAllFontNames(0, len);
+                 for (const f of fontsToLoad) { await figma.loadFontAsync(f); }
+                 
+                 // 전체 문장에 새 크기 지정
+                 node.setRangeFontSize(0, len, msg.size);
+               } else {
+                 node.fontSize = msg.size;
+               }
+            }
+          } catch(e) {
+            console.warn("폰트 크기 변경 실패:", e);
+          }
+        }
+      }
+
+      // 5. 텍스트 일괄 교체 & 기존 인라인 스타일 보존
       if (msg.type === 'update-texts') {
         let successCount = 0;
         for (const update of msg.updates) {
@@ -237,19 +286,17 @@ function openUI(targetFrame) {
                  continue; 
               }
 
-              // Style Preservation: 혼합 스타일 파이프라인 대응
               const len = node.characters.length;
               if (len > 0) {
-                 // 업데이트 전 원본 스타일의 모든 속성을 세그먼트 단위로 캐싱
                  const styledSegments = node.getStyledTextSegments(['fontName', 'fontSize', 'fontWeight', 'fills', 'letterSpacing', 'lineHeight']);
                  
                  const fontsToLoad = node.getRangeAllFontNames(0, len);
                  for (const f of fontsToLoad) { await figma.loadFontAsync(f); }
                  
-                 // 교체! (모든 스타일 초기화 및 첫글자 스타일로 덮어씌워짐)
+                 // 교체
                  node.characters = update.characters; 
                  
-                 // 캐싱된 혼합 스타일들을 새로 들어간 글자 길이에 맞춰 비례 적용 복원
+                 // 캐싱된 혼합 스타일들을 새로 들어간 글자 위치에 스케일링하여 덮어씌움
                  const newLen = update.characters.length;
                  let currPos = 0;
                  for (const seg of styledSegments) {

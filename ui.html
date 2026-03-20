@@ -8,17 +8,27 @@
     fieldset { border: 1px solid #e5e5e5; border-radius: 8px; padding: 12px; margin: 0; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
     legend { font-size: 12px; font-weight: 700; color: #18A0FB; background: #fff; padding: 0 4px; display: flex; align-items: center; justify-content: space-between; width: 100%; box-sizing: border-box; }
     .legend-title { display: inline-block; }
-    .btn-add { background: none; border: 1px solid #18A0FB; color: #18A0FB; border-radius: 4px; padding: 2px 6px; font-size: 10px; cursor: pointer; margin-left: auto; }
+    .actions { display: flex; gap: 4px; margin-left: auto; }
+    .btn-action { background: none; border-radius: 4px; padding: 2px 6px; font-size: 10px; cursor: pointer; border: 1px solid #ccc; color: #666; transition: background 0.2s; }
+    .btn-add { border-color: #18A0FB; color: #18A0FB; }
     .btn-add:hover { background: #e5f4ff; }
-    .field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
+    .btn-del { border-color: #f24822; color: #f24822; }
+    .btn-del:hover { background: #ffe5e5; }
+    
+    .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
     .field:last-child { margin-bottom: 0; }
     .label-row { display: flex; align-items: center; justify-content: space-between; }
     .semantic-label { font-size: 12px; font-weight: 600; color: #333; }
     .layer-name { font-size: 10px; color: #b3b3b3; font-family: monospace; }
-    input { width: 100%; border: 1px solid #e5e5e5; padding: 8px 10px; border-radius: 6px; box-sizing: border-box; font-size: 12px; transition: border-color 0.2s; background: #fafafa; }
-    input:focus { outline: none; border-color: #18A0FB; background: #fff; }
+    
+    .input-row { display: flex; gap: 8px; align-items: center; }
+    input[type="text"] { flex: 1; border: 1px solid #e5e5e5; padding: 8px 10px; border-radius: 6px; box-sizing: border-box; font-size: 12px; transition: border-color 0.2s; background: #fafafa; }
+    input[type="text"]:focus { outline: none; border-color: #18A0FB; background: #fff; }
+    .font-size-select { width: 60px; border: 1px solid #e5e5e5; padding: 7px 4px; border-radius: 6px; font-size: 12px; background: #fafafa; color: #333; outline: none; }
+    .font-size-select:focus { border-color: #18A0FB; }
+    
     .footer { padding: 16px; border-top: 1px solid #e5e5e5; display: flex; gap: 8px; background: #fff; position: sticky; bottom: 0;}
-    button.action { flex: 1; padding: 10px; font-size: 12px; font-weight: 600; border-radius: 6px; cursor: pointer; border: none; transition: background 0.2s; }
+    button.footer-btn { flex: 1; padding: 10px; font-size: 12px; font-weight: 600; border-radius: 6px; cursor: pointer; border: none; transition: background 0.2s; }
     .btn-update { background: #18A0FB; color: white; }
     .btn-update:hover { background: #0D8DE2; }
     .btn-close { background: #fff; color: #333; border: 1px solid #e5e5e5; }
@@ -26,13 +36,13 @@
   </style>
 </head>
 <body>
-  <header>📋 리스트 & 데이터 매니저</header>
+  <header>📋 지능형 리스트 & 데이터 매니저</header>
   <div class="content" id="form-container">
     <div style="text-align:center; padding: 30px; color:#888; font-size:12px;">데이터를 불러오는 중입니다...</div>
   </div>
   <div class="footer">
-    <button class="action btn-close" id="btn-close">닫기</button>
-    <button class="action btn-update" id="btn-update">디자인 전송</button>
+    <button class="footer-btn btn-close" id="btn-close">닫기</button>
+    <button class="footer-btn btn-update" id="btn-update">전체 디자인 전송</button>
   </div>
 
   <script>
@@ -63,15 +73,28 @@
         span.innerText = group.groupName;
         legend.appendChild(span);
 
-        // 상위 그룹(프레임) 단위 행 추가 버튼 (특정 구조일 경우 유용)
-        if (group.groupId) {
+        // Layout 영역(마스터 로우)인 경우 추가/삭제 버튼 활성화
+        if (group.groupId && group.groupName.startsWith("Layout_")) {
+          const actionDiv = document.createElement('div');
+          actionDiv.className = 'actions';
+
           const addBtn = document.createElement('button');
-          addBtn.className = 'btn-add';
-          addBtn.innerText = '+ 행 복제 (Add Row)';
+          addBtn.className = 'btn-action btn-add';
+          addBtn.innerText = '+ 행 복제';
           addBtn.onclick = () => {
              parent.postMessage({ pluginMessage: { type: 'clone-group', id: group.groupId } }, '*');
           };
-          legend.appendChild(addBtn);
+          
+          const delBtn = document.createElement('button');
+          delBtn.className = 'btn-action btn-del';
+          delBtn.innerText = '- 행 삭제';
+          delBtn.onclick = () => {
+             parent.postMessage({ pluginMessage: { type: 'delete-group', id: group.groupId } }, '*');
+          };
+
+          actionDiv.appendChild(addBtn);
+          actionDiv.appendChild(delBtn);
+          legend.appendChild(actionDiv);
         }
 
         fieldset.appendChild(legend);
@@ -94,19 +117,56 @@
           labelRow.appendChild(label);
           labelRow.appendChild(layerName);
 
+          const inputRow = document.createElement('div');
+          inputRow.className = 'input-row';
+
           const input = document.createElement('input');
           input.type = 'text';
+          input.className = 'text-input';
           input.id = 'input-' + field.id;
-          input.placeholder = '변경할 내용을 입력하세요...';
+          input.placeholder = '텍스트 입력...';
           input.value = field.characters; 
           
-          // Focus Mode: 인풋 창 클릭 시 피그마 캔버스 자동 이동
+          // Focus Mode 스크롤 점프
           input.onfocus = () => {
              parent.postMessage({ pluginMessage: { type: 'focus-node', id: field.id } }, '*');
           };
 
+          // Font Size Dropdown Control
+          const fontSizeSelect = document.createElement('select');
+          fontSizeSelect.className = 'font-size-select';
+          const sizes = [10, 11, 12, 13, 14, 16, 18, 20, 24, 28, 32, 36, 40, 48, 64];
+          let found = false;
+          sizes.forEach(sz => {
+             const opt = document.createElement('option');
+             opt.value = sz;
+             opt.innerText = String(sz);
+             if (Math.abs(field.fontSize - sz) < 1) {
+                opt.selected = true;
+                found = true;
+             }
+             fontSizeSelect.appendChild(opt);
+          });
+          // 기존 폰트 크기가 프리셋에 없으면 임의 추가
+          if (!found && field.fontSize) {
+             const opt = document.createElement('option');
+             opt.value = field.fontSize;
+             opt.innerText = field.fontSize;
+             opt.selected = true;
+             fontSizeSelect.appendChild(opt);
+          }
+          
+          // 실시간 크기 적용
+          fontSizeSelect.onchange = (e) => {
+             const val = Number(e.target.value);
+             parent.postMessage({ pluginMessage: { type: 'update-font-size', id: field.id, size: val } }, '*');
+          };
+
+          inputRow.appendChild(input);
+          inputRow.appendChild(fontSizeSelect);
+
           div.appendChild(labelRow);
-          div.appendChild(input);
+          div.appendChild(inputRow);
           fieldset.appendChild(div);
         });
 
@@ -132,7 +192,7 @@
       btn.disabled = true;
       parent.postMessage({ pluginMessage: { type: 'update-texts', updates } }, '*');
       setTimeout(() => { 
-        btn.innerText = "디자인 전송"; 
+        btn.innerText = "전체 디자인 전송"; 
         btn.disabled = false;
       }, 500);
     };
