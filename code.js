@@ -33,197 +33,104 @@ async function main() {
     }
 
     // --------------------------------------------------------
-    // [NEW] 폰트 로딩 사전 점검 (Pre-flight Check)
+    // 플러그인 UI (HTML) 브릿지 호출 및 통신 로직
     // --------------------------------------------------------
-    const textNodes = targetFrame.findAll(node => node.type === "TEXT" && isEditableNode(node));
-    const fontsSet = new Set();
-    const uniqueFontsToLoad = [];
     
-    for (const t of textNodes) {
-      if (t.fontName !== figma.mixed) {
-        const fontStr = `${t.fontName.family} ${t.fontName.style}`;
-        if (!fontsSet.has(fontStr)) {
-          fontsSet.add(fontStr);
-          uniqueFontsToLoad.push(t.fontName);
-        }
-      } else {
-        const f = t.getRangeFontName(0, 1);
-        if (f && f !== figma.mixed) {
-          const fontStr = `${f.family} ${f.style}`;
-          if (!fontsSet.has(fontStr)) {
-            fontsSet.add(fontStr);
-            uniqueFontsToLoad.push(f);
+    // UI에 전달할 그룹화된 필드 생성
+    function getGroupedFields() {
+      const finalTexts = targetFrame.findAll(node => 
+        node.type === "TEXT" && 
+        isEditableNode(node) && 
+        (node.name.startsWith("#") || node.name === "#Title" || node.name === "#SubTitle")
+      );
+      finalTexts.sort(sortByCoordinates);
+
+      const fieldGroupsMap = {};
+      for (const t of finalTexts) {
+        let p = t.parent;
+        let groupName = "기본 템플릿 영역";
+        let groupId = targetFrame.id; 
+        
+        // Layout_N 이라는 프레임을 찾아서 해당 그룹으로 귀속
+        while (p && p !== targetFrame.parent) {
+          if (p.name.startsWith("Layout_")) {
+            groupName = p.name;
+            groupId = p.id;
+            break;
           }
+          p = p.parent;
         }
-      }
-    }
-    
-    console.log("=== 템플릿 폰트 사용 리스트 ===");
-    console.log(Array.from(fontsSet));
-
-    for (const font of uniqueFontsToLoad) {
-      try {
-        await figma.loadFontAsync(font);
-      } catch(e) {
-        console.warn("폰트 로드 실패:", font, e);
-      }
-    }
-
-    // --------------------------------------------------------
-    // 2. 텍스트 레이어 네이밍 (기존 기능 수행)
-    // --------------------------------------------------------
-    function getFontSize(textNode) {
-      if (textNode.fontSize === figma.mixed) return textNode.getRangeFontSize(0, 1) || 0;
-      return textNode.fontSize || 0;
-    }
-
-    textNodes.sort((a, b) => {
-      const sizeA = getFontSize(a);
-      const sizeB = getFontSize(b);
-      if (sizeA !== sizeB) return sizeB - sizeA;
-      return sortByCoordinates(a, b);
-    });
-
-    const titleNode = textNodes.length > 0 ? textNodes.shift() : null;
-    const subtitleNode = textNodes.length > 0 ? textNodes.shift() : null;
-
-    if (titleNode) { try { titleNode.name = "#Title"; } catch(e) {} }
-    if (subtitleNode) { try { subtitleNode.name = "#SubTitle"; } catch(e) {} }
-
-    textNodes.sort(sortByCoordinates);
-    textNodes.forEach((node, index) => {
-      try { node.name = `#Text_${index + 1}`; } catch (e) {}
-    });
-
-    // --------------------------------------------------------
-    // 3. 이미지 레이어 정리
-    // --------------------------------------------------------
-    const imageNodes = targetFrame.findAll(node => {
-      if (!isEditableNode(node)) return false;
-      if ('fills' in node && Array.isArray(node.fills)) {
-        return node.fills.some(fill => fill.type === "IMAGE");
-      }
-      return false;
-    });
-
-    imageNodes.sort((a, b) => {
-      const areaA = a.width * a.height;
-      const areaB = b.width * b.height;
-      if (areaA !== areaB) return areaB - areaA;
-      return sortByCoordinates(a, b);
-    });
-
-    const mainImage = imageNodes.length > 0 ? imageNodes.shift() : null;
-    if (mainImage) { try { mainImage.name = "@Main_Image"; } catch(e) {} }
-
-    imageNodes.sort(sortByCoordinates);
-    imageNodes.forEach((node, index) => {
-      try { node.name = `@Image_${index + 1}`; } catch(e) {}
-    });
-
-    // --------------------------------------------------------
-    // 4. 오토레이아웃 강제 전환
-    // --------------------------------------------------------
-    const allFrames = targetFrame.findAll(node => node.type === "FRAME" && isEditableNode(node));
-    const layoutNodes = [];
-
-    allFrames.forEach(frame => {
-      if (frame.children && frame.children.length > 0) {
-        if (frame.layoutMode === "NONE") {
-          try {
-            frame.layoutMode = "VERTICAL";
-            let spacing = 0;
-            if (frame.children.length >= 2) {
-              const sortedKids = [...frame.children].sort((a, b) => a.y - b.y);
-              const gaps = [];
-              for (let i = 1; i < sortedKids.length; i++) {
-                const prev = sortedKids[i - 1];
-                const curr = sortedKids[i];
-                gaps.push(curr.y - (prev.y + prev.height));
-              }
-              const avgGap = gaps.reduce((sum, g) => sum + g, 0) / gaps.length;
-              spacing = Math.max(0, Math.round(avgGap));
-            }
-            frame.itemSpacing = spacing;
-            layoutNodes.push(frame);
-          } catch(e) {}
-        } else {
-          layoutNodes.push(frame);
+        
+        if (!fieldGroupsMap[groupId]) {
+          fieldGroupsMap[groupId] = {
+            groupId: groupId,
+            groupName: groupName,
+            fields: []
+          };
         }
+        
+        // Semantic Labeling: 첫 10글자 추출
+        let semanticLabel = t.characters.substring(0, 10).replace(/\n/g, ' ');
+        if (t.characters.length > 10) semanticLabel += "...";
+        if (t.name === "#Title") semanticLabel = `👑 ` + semanticLabel;
+
+        fieldGroupsMap[groupId].fields.push({
+          id: t.id,
+          name: t.name,
+          semanticLabel: semanticLabel,
+          characters: t.characters
+        });
       }
-    });
-
-    layoutNodes.sort(sortByCoordinates);
-    layoutNodes.forEach((node, index) => {
-      try { node.name = `Layout_${index + 1}`; } catch(e) {}
-    });
-
-    for (const layout of layoutNodes) {
-      try {
-        if (layout.layoutMode === "VERTICAL") {
-          layout.primaryAxisSizingMode = "AUTO"; 
-        } else if (layout.layoutMode === "HORIZONTAL") {
-          layout.counterAxisSizingMode = "AUTO"; 
-        }
-      } catch(e) {}
+      return Object.values(fieldGroupsMap);
     }
 
-    const allProcessedTextNodes = [titleNode, subtitleNode, ...textNodes].filter(n => n !== null);
-
-    for (const text of allProcessedTextNodes) {
-      try {
-        if (text.parent && text.parent.layoutMode !== "NONE") {
-          text.layoutAlign = "STRETCH"; 
-        }
-        text.textAutoResize = "HEIGHT";
-      } catch(e) {}
-    }
-
-
-    // --------------------------------------------------------
-    // 6. 플러그인 UI (HTML) 브릿지 호출 및 통신 로직
-    // --------------------------------------------------------
-    figma.notify(`✅ 자동 세팅 완료! 표시된 폼에 새로운 디자인 내용을 입력하세요.`);
-
-    // UI에 전달할 #Text_ 데이터 추출
-    const finalTexts = targetFrame.findAll(node => 
-      node.type === "TEXT" && 
-      isEditableNode(node) && 
-      (node.name.startsWith("#") || node.name === "#Title" || node.name === "#SubTitle")
-    );
-    finalTexts.sort(sortByCoordinates);
-
-    const textFieldsForUI = [];
-    for (const t of finalTexts) {
-      textFieldsForUI.push({
-        id: t.id,
-        name: t.name,
-        characters: t.characters
-      });
-    }
-
-    // 🌟 HTML UI 랜더링 (여기서 figma.closePlugin을 하면 안 됨)
+    // 🌟 HTML UI 랜더링 
     figma.showUI(__html__, { width: 340, height: 600, themeColors: true });
     
-    // UI 로드가 약간 걸리므로 바로 쏴주면 대기중이던 HTML이 수령
-    figma.ui.postMessage({ type: 'init-fields', fields: textFieldsForUI });
+    // 초기 필드 전송
+    figma.ui.postMessage({ type: 'init-fields', groups: getGroupedFields() });
 
-    // HTML 버튼 클릭 메시지 수신 (양방향 연결)
+    // HTML 버튼 클릭 및 메시지 수신 (양방향 연결)
     figma.ui.onmessage = async (msg) => {
+      
+      // Focus Mode 로직 추가
+      if (msg.type === 'focus-node') {
+        const node = figma.getNodeById(msg.id);
+        if (node) {
+          figma.currentPage.selection = [node];
+          figma.viewport.scrollAndZoomIntoView([node]);
+        }
+      }
+
+      // Repeater (Clone) 로직 추가
+      if (msg.type === 'clone-group') {
+        const nodeToClone = figma.getNodeById(msg.id);
+        if (nodeToClone && nodeToClone.type === "FRAME" && nodeToClone.parent) {
+          const clone = nodeToClone.clone();
+          const index = nodeToClone.parent.children.indexOf(nodeToClone);
+          nodeToClone.parent.insertChild(index + 1, clone); // 바로 밑에 삽입
+          
+          figma.notify(`➕ [${nodeToClone.name}] 세트가 성공적으로 복제되었습니다.`);
+          
+          // 새로 추가된 요소를 포함하여 UI 폼 전면 갱신
+          figma.ui.postMessage({ type: 'init-fields', groups: getGroupedFields() });
+        }
+      }
+
+      // 텍스트 일괄 업데이트 로직
       if (msg.type === 'update-texts') {
         let successCount = 0;
         for (const update of msg.updates) {
           const node = figma.getNodeById(update.id);
-          if (node && node.type === "TEXT") {
+          if (node && node.type === "TEXT" && node.characters !== update.characters) {
             try {
-              // 안전한 값 대입을 위한 마지막 방어선 로딩
-              if (node.fontName !== figma.mixed) {
-                await figma.loadFontAsync(node.fontName);
-              } else {
-                const f = node.getRangeFontName(0, 1);
-                if (f && f !== figma.mixed) await figma.loadFontAsync(f);
+              // Technical Defense: Mixed Inline Styles 안전 처리
+              // 노드에 적용된 모든 다양한 폰트 종류를 불러와 충돌을 원천 방지합니다.
+              const fontsToLoad = node.getRangeAllFontNames(0, node.characters.length);
+              for (const font of fontsToLoad) {
+                await figma.loadFontAsync(font);
               }
-              // 사용자가 입력 폼에서 쓴 글자를 피그마 레이어에 덮어씌움
+              
               node.characters = update.characters;
               successCount++;
             } catch(e) {
@@ -243,7 +150,6 @@ async function main() {
     const errorMsg = err instanceof Error ? err.message : String(err);
     figma.notify("오류가 발생했습니다: " + errorMsg, { error: true });
     console.error("Plugin crashed:", err);
-    // 예외 오류 발생 시에만 플러그인 종료
     figma.closePlugin(); 
   }
 }
