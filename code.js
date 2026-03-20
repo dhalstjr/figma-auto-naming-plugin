@@ -32,16 +32,10 @@ async function main() {
       return xA - xB;
     }
 
-    let textRenamedCount = 0;
-    let imageRenamedCount = 0;
-    let layoutRenamedCount = 0;
-    let autoLayoutConvertedCount = 0;
-
     // --------------------------------------------------------
     // [NEW] 폰트 로딩 사전 점검 (Pre-flight Check)
     // --------------------------------------------------------
     const textNodes = targetFrame.findAll(node => node.type === "TEXT" && isEditableNode(node));
-    
     const fontsSet = new Set();
     const uniqueFontsToLoad = [];
     
@@ -67,7 +61,6 @@ async function main() {
     console.log("=== 템플릿 폰트 사용 리스트 ===");
     console.log(Array.from(fontsSet));
 
-    // 나중에 textAutoResize 설정을 위해 폰트 강제 선로드 (필수)
     for (const font of uniqueFontsToLoad) {
       try {
         await figma.loadFontAsync(font);
@@ -77,7 +70,7 @@ async function main() {
     }
 
     // --------------------------------------------------------
-    // 2. 텍스트 레이어 네이밍 로직
+    // 2. 텍스트 레이어 네이밍 (기존 기능 수행)
     // --------------------------------------------------------
     function getFontSize(textNode) {
       if (textNode.fontSize === figma.mixed) return textNode.getRangeFontSize(0, 1) || 0;
@@ -94,16 +87,16 @@ async function main() {
     const titleNode = textNodes.length > 0 ? textNodes.shift() : null;
     const subtitleNode = textNodes.length > 0 ? textNodes.shift() : null;
 
-    if (titleNode) { try { titleNode.name = "#Title"; textRenamedCount++; } catch(e) {} }
-    if (subtitleNode) { try { subtitleNode.name = "#SubTitle"; textRenamedCount++; } catch(e) {} }
+    if (titleNode) { try { titleNode.name = "#Title"; } catch(e) {} }
+    if (subtitleNode) { try { subtitleNode.name = "#SubTitle"; } catch(e) {} }
 
     textNodes.sort(sortByCoordinates);
     textNodes.forEach((node, index) => {
-      try { node.name = `#Text_${index + 1}`; textRenamedCount++; } catch (e) {}
+      try { node.name = `#Text_${index + 1}`; } catch (e) {}
     });
 
     // --------------------------------------------------------
-    // 3. 이미지 레이어 네이밍 보강
+    // 3. 이미지 레이어 정리
     // --------------------------------------------------------
     const imageNodes = targetFrame.findAll(node => {
       if (!isEditableNode(node)) return false;
@@ -121,28 +114,24 @@ async function main() {
     });
 
     const mainImage = imageNodes.length > 0 ? imageNodes.shift() : null;
-    if (mainImage) { try { mainImage.name = "@Main_Image"; imageRenamedCount++; } catch(e) {} }
+    if (mainImage) { try { mainImage.name = "@Main_Image"; } catch(e) {} }
 
     imageNodes.sort(sortByCoordinates);
     imageNodes.forEach((node, index) => {
-      try { node.name = `@Image_${index + 1}`; imageRenamedCount++; } catch(e) {}
+      try { node.name = `@Image_${index + 1}`; } catch(e) {}
     });
 
     // --------------------------------------------------------
-    // 4. 상위 프레임 오토레이아웃 강제 전환 & 네이밍 (NEW 로직)
+    // 4. 오토레이아웃 강제 전환
     // --------------------------------------------------------
     const allFrames = targetFrame.findAll(node => node.type === "FRAME" && isEditableNode(node));
     const layoutNodes = [];
 
-    // 텍스트/이미지를 자식으로 가지는 프레임 등을 오토레이아웃으로 전격 변환!
     allFrames.forEach(frame => {
       if (frame.children && frame.children.length > 0) {
         if (frame.layoutMode === "NONE") {
           try {
-            // 구조 강제화 (세로 오토레이아웃)
             frame.layoutMode = "VERTICAL";
-            
-            // 물리적 간격을 계산하여 itemSpacing에 자연스럽게 반영
             let spacing = 0;
             if (frame.children.length >= 2) {
               const sortedKids = [...frame.children].sort((a, b) => a.y - b.y);
@@ -156,14 +145,9 @@ async function main() {
               spacing = Math.max(0, Math.round(avgGap));
             }
             frame.itemSpacing = spacing;
-            
-            autoLayoutConvertedCount++;
-            layoutNodes.push(frame); // 성공하면 layout 배열에 추가
-          } catch(e) {
-            console.warn("오토레이아웃 전환 실패:", e);
-          }
+            layoutNodes.push(frame);
+          } catch(e) {}
         } else {
-          // 이미 오토레이아웃인 아이켓도 배열에 병합
           layoutNodes.push(frame);
         }
       }
@@ -171,57 +155,97 @@ async function main() {
 
     layoutNodes.sort(sortByCoordinates);
     layoutNodes.forEach((node, index) => {
-      try {
-        node.name = `Layout_${index + 1}`; 
-        layoutRenamedCount++;
-      } catch(e) {}
+      try { node.name = `Layout_${index + 1}`; } catch(e) {}
     });
 
-    // --------------------------------------------------------
-    // 5. 가변 크기 속성 강제 (Resizing Rules)
-    // --------------------------------------------------------
-    // 5-1. 모든 Layout_XX 의 세로 높이는 Hug contents로 설정
     for (const layout of layoutNodes) {
       try {
         if (layout.layoutMode === "VERTICAL") {
-          layout.primaryAxisSizingMode = "AUTO"; // 세로축 Hug
+          layout.primaryAxisSizingMode = "AUTO"; 
         } else if (layout.layoutMode === "HORIZONTAL") {
-          layout.counterAxisSizingMode = "AUTO"; // 피그마 규격상 가로배열에서는 교차축(세로)이 Hug
+          layout.counterAxisSizingMode = "AUTO"; 
         }
-      } catch(e) {
-        console.warn("Layout resize rule 적용 실패:", e);
-      }
+      } catch(e) {}
     }
 
-    // 5-2. 결합된 전체 텍스트 노드 처리 (가로 꽉 채움, 세로 텍스트 폭에 맞춤)
     const allProcessedTextNodes = [titleNode, subtitleNode, ...textNodes].filter(n => n !== null);
 
     for (const text of allProcessedTextNodes) {
       try {
-        // 너비: Fill container (가로/세로 방향 상관없이 STRETCH)
         if (text.parent && text.parent.layoutMode !== "NONE") {
           text.layoutAlign = "STRETCH"; 
         }
-        // 높이: Hug contents (수직 방향 글자 수에 따라 늘어남) - *반드시 사전에 폰트가 로드되어야 에러가 나지 않음*
         text.textAutoResize = "HEIGHT";
-      } catch(e) {
-        console.warn("Text resize rule 적용 실패:", e);
-      }
+      } catch(e) {}
     }
 
+
     // --------------------------------------------------------
-    // 6. 결과 알림
+    // 6. 플러그인 UI (HTML) 브릿지 호출 및 통신 로직
     // --------------------------------------------------------
-    figma.notify(`✅ 총 ${autoLayoutConvertedCount}개의 컨테이너를 오토레이아웃으로 전환했습니다. 이제 텍스트 길이에 상관없이 디자인이 깨지지 않습니다. 2단계(UI 개발)로 진행하셔도 좋습니다.`, { timeout: 5000 });
+    figma.notify(`✅ 자동 세팅 완료! 표시된 폼에 새로운 디자인 내용을 입력하세요.`);
+
+    // UI에 전달할 #Text_ 데이터 추출
+    const finalTexts = targetFrame.findAll(node => 
+      node.type === "TEXT" && 
+      isEditableNode(node) && 
+      (node.name.startsWith("#") || node.name === "#Title" || node.name === "#SubTitle")
+    );
+    finalTexts.sort(sortByCoordinates);
+
+    const textFieldsForUI = [];
+    for (const t of finalTexts) {
+      textFieldsForUI.push({
+        id: t.id,
+        name: t.name,
+        characters: t.characters
+      });
+    }
+
+    // 🌟 HTML UI 랜더링 (여기서 figma.closePlugin을 하면 안 됨)
+    figma.showUI(__html__, { width: 340, height: 600, themeColors: true });
+    
+    // UI 로드가 약간 걸리므로 바로 쏴주면 대기중이던 HTML이 수령
+    figma.ui.postMessage({ type: 'init-fields', fields: textFieldsForUI });
+
+    // HTML 버튼 클릭 메시지 수신 (양방향 연결)
+    figma.ui.onmessage = async (msg) => {
+      if (msg.type === 'update-texts') {
+        let successCount = 0;
+        for (const update of msg.updates) {
+          const node = figma.getNodeById(update.id);
+          if (node && node.type === "TEXT") {
+            try {
+              // 안전한 값 대입을 위한 마지막 방어선 로딩
+              if (node.fontName !== figma.mixed) {
+                await figma.loadFontAsync(node.fontName);
+              } else {
+                const f = node.getRangeFontName(0, 1);
+                if (f && f !== figma.mixed) await figma.loadFontAsync(f);
+              }
+              // 사용자가 입력 폼에서 쓴 글자를 피그마 레이어에 덮어씌움
+              node.characters = update.characters;
+              successCount++;
+            } catch(e) {
+              console.warn("폰트 로드 또는 대입 실패:", e);
+            }
+          }
+        }
+        figma.notify(`✨ ${successCount}개의 디자인 텍스트가 즉시 교체되었습니다!`);
+      }
+      
+      if (msg.type === 'close') {
+        figma.closePlugin();
+      }
+    };
 
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err);
     figma.notify("오류가 발생했습니다: " + errorMsg, { error: true });
     console.error("Plugin crashed:", err);
-  } finally {
-    figma.closePlugin();
+    // 예외 오류 발생 시에만 플러그인 종료
+    figma.closePlugin(); 
   }
 }
 
-// 스크립트가 Async-Await을 쓰기 위해 트리거 함수로 실행
 main();
