@@ -1,4 +1,4 @@
-function main() {
+async function main() {
   try {
     const selection = figma.currentPage.selection;
     
@@ -14,7 +14,6 @@ function main() {
 
     const targetFrame = selection[0];
 
-    // 읽기 전용 인스턴스 레이어 스킵
     function isEditableNode(node) {
       let current = node.parent;
       while (current && current !== targetFrame.parent) {
@@ -24,16 +23,10 @@ function main() {
       return true;
     }
 
-    // 좌표 기반 정렬 (Y기준 정렬, 10px 이내는 X기준 좌에서 우)
     function sortByCoordinates(a, b) {
       const yA = a.absoluteBoundingBox ? a.absoluteBoundingBox.y : a.y;
       const yB = b.absoluteBoundingBox ? b.absoluteBoundingBox.y : b.y;
-      
-      if (Math.abs(yA - yB) > 10) {
-        return yA - yB; // 10px 이상 차이나면 Y좌표가 위인 것이 먼저
-      }
-      
-      // 높이가 10px 이내로 비슷하다면 좌에서 우로 정렬
+      if (Math.abs(yA - yB) > 10) return yA - yB;
       const xA = a.absoluteBoundingBox ? a.absoluteBoundingBox.x : a.x;
       const xB = b.absoluteBoundingBox ? b.absoluteBoundingBox.x : b.x;
       return xA - xB;
@@ -42,21 +35,55 @@ function main() {
     let textRenamedCount = 0;
     let imageRenamedCount = 0;
     let layoutRenamedCount = 0;
-    let missingLayoutCount = 0;
+    let autoLayoutConvertedCount = 0;
 
     // --------------------------------------------------------
-    // 2. 텍스트 레이어 네이밍 로직 (폰트 크기 TOP 2 + 좌표 정렬)
+    // [NEW] 폰트 로딩 사전 점검 (Pre-flight Check)
     // --------------------------------------------------------
     const textNodes = targetFrame.findAll(node => node.type === "TEXT" && isEditableNode(node));
-
-    function getFontSize(textNode) {
-      if (textNode.fontSize === figma.mixed) {
-        return textNode.getRangeFontSize(0, 1) || 0;
+    
+    const fontsSet = new Set();
+    const uniqueFontsToLoad = [];
+    
+    for (const t of textNodes) {
+      if (t.fontName !== figma.mixed) {
+        const fontStr = `${t.fontName.family} ${t.fontName.style}`;
+        if (!fontsSet.has(fontStr)) {
+          fontsSet.add(fontStr);
+          uniqueFontsToLoad.push(t.fontName);
+        }
+      } else {
+        const f = t.getRangeFontName(0, 1);
+        if (f && f !== figma.mixed) {
+          const fontStr = `${f.family} ${f.style}`;
+          if (!fontsSet.has(fontStr)) {
+            fontsSet.add(fontStr);
+            uniqueFontsToLoad.push(f);
+          }
+        }
       }
+    }
+    
+    console.log("=== 템플릿 폰트 사용 리스트 ===");
+    console.log(Array.from(fontsSet));
+
+    // 나중에 textAutoResize 설정을 위해 폰트 강제 선로드 (필수)
+    for (const font of uniqueFontsToLoad) {
+      try {
+        await figma.loadFontAsync(font);
+      } catch(e) {
+        console.warn("폰트 로드 실패:", font, e);
+      }
+    }
+
+    // --------------------------------------------------------
+    // 2. 텍스트 레이어 네이밍 로직
+    // --------------------------------------------------------
+    function getFontSize(textNode) {
+      if (textNode.fontSize === figma.mixed) return textNode.getRangeFontSize(0, 1) || 0;
       return textNode.fontSize || 0;
     }
 
-    // 크기 내우선 정렬 (크기 같으면 좌표순)
     textNodes.sort((a, b) => {
       const sizeA = getFontSize(a);
       const sizeB = getFontSize(b);
@@ -67,26 +94,16 @@ function main() {
     const titleNode = textNodes.length > 0 ? textNodes.shift() : null;
     const subtitleNode = textNodes.length > 0 ? textNodes.shift() : null;
 
-    if (titleNode) {
-      try { titleNode.name = "#Title"; textRenamedCount++; } catch(e) {}
-    }
-    if (subtitleNode) {
-      try { subtitleNode.name = "#SubTitle"; textRenamedCount++; } catch(e) {}
-    }
+    if (titleNode) { try { titleNode.name = "#Title"; textRenamedCount++; } catch(e) {} }
+    if (subtitleNode) { try { subtitleNode.name = "#SubTitle"; textRenamedCount++; } catch(e) {} }
 
-    // 나머지 텍스트들은 오직 좌표 기준으로 재정렬 후 번호 부여
     textNodes.sort(sortByCoordinates);
     textNodes.forEach((node, index) => {
-      try {
-        node.name = `#Text_${index + 1}`;
-        textRenamedCount++;
-      } catch (e) {
-        console.warn("텍스트 네이밍 실패:", e);
-      }
+      try { node.name = `#Text_${index + 1}`; textRenamedCount++; } catch (e) {}
     });
 
     // --------------------------------------------------------
-    // 3. 이미지 레이어 네이밍 보강 (면적 TOP 1 + 좌표 정렬)
+    // 3. 이미지 레이어 네이밍 보강
     // --------------------------------------------------------
     const imageNodes = targetFrame.findAll(node => {
       if (!isEditableNode(node)) return false;
@@ -104,37 +121,49 @@ function main() {
     });
 
     const mainImage = imageNodes.length > 0 ? imageNodes.shift() : null;
-    if (mainImage) {
-      try { mainImage.name = "@Main_Image"; imageRenamedCount++; } catch(e) {}
-    }
+    if (mainImage) { try { mainImage.name = "@Main_Image"; imageRenamedCount++; } catch(e) {} }
 
     imageNodes.sort(sortByCoordinates);
     imageNodes.forEach((node, index) => {
-      try {
-        node.name = `@Image_${index + 1}`; 
-        imageRenamedCount++;
-      } catch(e) {}
+      try { node.name = `@Image_${index + 1}`; imageRenamedCount++; } catch(e) {}
     });
 
     // --------------------------------------------------------
-    // 4. 오토레이아웃 네이밍 및 누락 검증 로직
+    // 4. 상위 프레임 오토레이아웃 강제 전환 & 네이밍 (NEW 로직)
     // --------------------------------------------------------
     const allFrames = targetFrame.findAll(node => node.type === "FRAME" && isEditableNode(node));
     const layoutNodes = [];
 
+    // 텍스트/이미지를 자식으로 가지는 프레임 등을 오토레이아웃으로 전격 변환!
     allFrames.forEach(frame => {
-      // 자식 요소가 하나 이상 있는 프레임만 대상으로 함
       if (frame.children && frame.children.length > 0) {
         if (frame.layoutMode === "NONE") {
-          // 오토레이아웃이 누락된 일반 프레임!
           try {
-            // 태그가 이미 적용되어 있는지 확인하여 중복 방지
-            const cleanName = frame.name.replace(/^🚨\[오토레이아웃 필요\]\s*/, "");
-            frame.name = `🚨[오토레이아웃 필요] ${cleanName}`;
-            missingLayoutCount++;
-          } catch(e) {}
+            // 구조 강제화 (세로 오토레이아웃)
+            frame.layoutMode = "VERTICAL";
+            
+            // 물리적 간격을 계산하여 itemSpacing에 자연스럽게 반영
+            let spacing = 0;
+            if (frame.children.length >= 2) {
+              const sortedKids = [...frame.children].sort((a, b) => a.y - b.y);
+              const gaps = [];
+              for (let i = 1; i < sortedKids.length; i++) {
+                const prev = sortedKids[i - 1];
+                const curr = sortedKids[i];
+                gaps.push(curr.y - (prev.y + prev.height));
+              }
+              const avgGap = gaps.reduce((sum, g) => sum + g, 0) / gaps.length;
+              spacing = Math.max(0, Math.round(avgGap));
+            }
+            frame.itemSpacing = spacing;
+            
+            autoLayoutConvertedCount++;
+            layoutNodes.push(frame); // 성공하면 layout 배열에 추가
+          } catch(e) {
+            console.warn("오토레이아웃 전환 실패:", e);
+          }
         } else {
-          // 이상이 없는 오토레이아웃 프레임은 배열에 담아 네이밍 준비
+          // 이미 오토레이아웃인 아이켓도 배열에 병합
           layoutNodes.push(frame);
         }
       }
@@ -149,16 +178,41 @@ function main() {
     });
 
     // --------------------------------------------------------
-    // 5. 작업 완료 알림결과 리포트
+    // 5. 가변 크기 속성 강제 (Resizing Rules)
     // --------------------------------------------------------
-    let summaryText = `✅ 텍스트 ${textRenamedCount}개, 이미지 ${imageRenamedCount}개 네이밍 완료.`;
-    
-    if (missingLayoutCount > 0) {
-      summaryText += ` (⚠️ 오토레이아웃 누락: ${missingLayoutCount}건)`;
-      figma.notify(summaryText, { error: true });
-    } else {
-      figma.notify(summaryText);
+    // 5-1. 모든 Layout_XX 의 세로 높이는 Hug contents로 설정
+    for (const layout of layoutNodes) {
+      try {
+        if (layout.layoutMode === "VERTICAL") {
+          layout.primaryAxisSizingMode = "AUTO"; // 세로축 Hug
+        } else if (layout.layoutMode === "HORIZONTAL") {
+          layout.counterAxisSizingMode = "AUTO"; // 피그마 규격상 가로배열에서는 교차축(세로)이 Hug
+        }
+      } catch(e) {
+        console.warn("Layout resize rule 적용 실패:", e);
+      }
     }
+
+    // 5-2. 결합된 전체 텍스트 노드 처리 (가로 꽉 채움, 세로 텍스트 폭에 맞춤)
+    const allProcessedTextNodes = [titleNode, subtitleNode, ...textNodes].filter(n => n !== null);
+
+    for (const text of allProcessedTextNodes) {
+      try {
+        // 너비: Fill container (가로/세로 방향 상관없이 STRETCH)
+        if (text.parent && text.parent.layoutMode !== "NONE") {
+          text.layoutAlign = "STRETCH"; 
+        }
+        // 높이: Hug contents (수직 방향 글자 수에 따라 늘어남) - *반드시 사전에 폰트가 로드되어야 에러가 나지 않음*
+        text.textAutoResize = "HEIGHT";
+      } catch(e) {
+        console.warn("Text resize rule 적용 실패:", e);
+      }
+    }
+
+    // --------------------------------------------------------
+    // 6. 결과 알림
+    // --------------------------------------------------------
+    figma.notify(`✅ 총 ${autoLayoutConvertedCount}개의 컨테이너를 오토레이아웃으로 전환했습니다. 이제 텍스트 길이에 상관없이 디자인이 깨지지 않습니다. 2단계(UI 개발)로 진행하셔도 좋습니다.`, { timeout: 5000 });
 
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err);
@@ -169,4 +223,5 @@ function main() {
   }
 }
 
+// 스크립트가 Async-Await을 쓰기 위해 트리거 함수로 실행
 main();
