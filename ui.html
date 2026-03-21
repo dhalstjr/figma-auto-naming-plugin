@@ -16,8 +16,15 @@
     .btn-del:hover { background: #ffe5e5; }
     
     .fields-container { margin-top: 12px; }
-    .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+    .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; padding: 8px; border-radius: 8px; border: 1px solid transparent; transition: all 0.2s; }
     .field:last-child { margin-bottom: 0; }
+    .field.highlight { background: #f0f8ff; border-color: #18A0FB; }
+    fieldset.highlight-group { border-color: #18A0FB; box-shadow: 0 0 0 1px #18A0FB; }
+    .sub-group { border: 1px dashed #ccc; padding: 8px; border-radius: 8px; background: #fafafa; margin-bottom: 8px; transition: all 0.2s; }
+    .sub-group.highlight-group { border-color: #18A0FB; background: #e5f4ff; box-shadow: 0 0 0 1px #18A0FB; }
+    .sub-group-header { font-size: 11px; font-weight: 700; color: #555; display: flex; justify-content: space-between; cursor: pointer; user-select: none; margin-bottom: 6px; padding: 2px 4px; border-radius: 4px; transition: background 0.2s; }
+    .sub-group-header:hover { background: #eee; }
+    .sub-group-fields { display: flex; flex-direction: column; gap: 0; }
     .label-row { display: flex; align-items: center; justify-content: space-between; }
     .semantic-label { font-size: 12px; font-weight: 600; color: #333; display: flex; align-items: center; gap: 6px;}
     .layer-name { font-size: 10px; color: #b3b3b3; font-family: monospace; }
@@ -44,11 +51,37 @@
     button.footer-btn { flex: 1; padding: 10px; font-size: 12px; font-weight: 600; border-radius: 6px; cursor: pointer; border: none; transition: background 0.2s; }
     .btn-update { background: #18A0FB; color: white; }
     .btn-update:hover { background: #0D8DE2; }
-    .btn-close { background: #fff; color: #333; border: 1px solid #e5e5e5; }
     .btn-close:hover { background: #f5f5f5; }
+    
+    #font-modal-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0, 0, 0, 0.5); z-index: 2000; display: none; align-items: center; justify-content: center; }
+    .font-modal-box { background: #fff; border-radius: 12px; width: 300px; padding: 24px; box-shadow: 0 10px 30px rgba(0,0,0,0.2); display: flex; flex-direction: column; align-items: center; text-align: center; }
+    .font-modal-icon { font-size: 40px; margin-bottom: 12px; }
+    .font-modal-title { font-size: 16px; font-weight: 700; margin-bottom: 8px; color: #333; }
+    .font-modal-font-name { font-size: 14px; font-weight: 700; color: #f24822; margin-bottom: 16px; background: #ffe5e5; padding: 4px 8px; border-radius: 4px; }
+    .font-modal-desc { font-size: 12px; color: #555; text-align: left; background: #f5f5f5; padding: 12px; border-radius: 8px; width: 100%; box-sizing: border-box; margin-bottom: 20px; line-height: 1.5; }
+    .font-modal-btn { background: #18A0FB; color: white; border: none; padding: 10px 16px; border-radius: 6px; font-weight: 600; cursor: pointer; width: 100%; transition: background 0.2s; }
+    .font-modal-btn:hover { background: #0D8DE2; }
   </style>
 </head>
 <body>
+  <div id="font-modal-overlay">
+    <div class="font-modal-box">
+      <div class="font-modal-icon">⚠️</div>
+      <div class="font-modal-title">폰트 파일이 누락되었습니다!</div>
+      <div class="font-modal-font-name" id="missing-font-name">Pretendard - Bold</div>
+      <div class="font-modal-desc">
+        <!-- 사내 가이드에 맞춰 수정하세요 -->
+        <b>1. 다운로드 경로:</b><br>
+        구글 드라이브 &gt; [00. 디자인 공용 폰트]<br>
+        <i>또는 눈누/구글폰트 검색</i><br><br>
+        <b>2. 설치 방법:</b><br>
+        폰트 파일(.ttf / .otf) 더블클릭 후 '설치'<br><br>
+        💡 <b>중요:</b> 설치 완료 후 반드시 <b>피그마를 완전히 종료하고 재시작</b>해야 적용됩니다.
+      </div>
+      <button class="font-modal-btn" onclick="document.getElementById('font-modal-overlay').style.display='none'">확인 및 창 닫기</button>
+    </div>
+  </div>
+
   <header>
     <span>📋 템플릿 마스터 에디터</span>
     <button id="btn-show-deleted" class="btn-action">휴지통 보기</button>
@@ -64,6 +97,14 @@
   </div>
 
   <script>
+    window.onerror = function(msg, url, lineNo, columnNo, error) {
+      const container = document.getElementById('form-container');
+      if (container) {
+        container.innerHTML = `<div style="text-align:center; padding:20px; font-weight:bold; color:red; word-break:keep-all;">🚨 플러그인 렌더링 에러가 발생했습니다.<br><br>내용: ${msg}<br>위치: ${lineNo}번째 줄</div>`;
+      }
+      return false;
+    };
+
     let fieldsGroups = [];
     let showDeleted = false;
 
@@ -73,6 +114,52 @@
         fieldsGroups = msg.groups;
         renderFields();
       }
+      if (msg.type === 'SHOW_FONT_MODAL') {
+        const fontNames = msg.fonts.map(f => `${f.family} - ${f.style}`).join(', ');
+        document.getElementById('missing-font-name').innerText = fontNames;
+        document.getElementById('font-modal-overlay').style.display = 'flex';
+      }
+      if (msg.type === 'selection-change') {
+        document.querySelectorAll('.field.highlight, fieldset.highlight-group, .sub-group.highlight-group').forEach(el => {
+           el.classList.remove('highlight');
+           el.classList.remove('highlight-group');
+        });
+        if (msg.ids && msg.ids.length > 0) {
+           let scrolled = false;
+           msg.ids.forEach(id => {
+              const fieldDiv = document.getElementById('field-' + id);
+              if (fieldDiv) {
+                 fieldDiv.classList.add('highlight');
+                 const subFields = fieldDiv.closest('.sub-group-fields');
+                 if (subFields && subFields.style.display === "none") {
+                     subFields.style.display = "flex";
+                     subFields.previousSibling.querySelector('.sub-toggle').innerText = "▼";
+                 }
+                 const fieldsContainer = fieldDiv.closest('.fields-container');
+                 if (fieldsContainer && fieldsContainer.style.display === "none") {
+                     fieldsContainer.style.display = "block";
+                 }
+                 if (!scrolled) { fieldDiv.scrollIntoView({ behavior: 'smooth', block: 'center' }); scrolled = true; }
+              } else {
+                 const subGroupDiv = document.getElementById('subgroup-' + id);
+                 if (subGroupDiv) {
+                    subGroupDiv.classList.add('highlight-group');
+                    const fieldsContainer = subGroupDiv.closest('.fields-container');
+                    if (fieldsContainer && fieldsContainer.style.display === "none") {
+                        fieldsContainer.style.display = "block";
+                    }
+                    if (!scrolled) { subGroupDiv.scrollIntoView({ behavior: 'smooth', block: 'center' }); scrolled = true; }
+                 } else {
+                    const groupDiv = document.getElementById('group-' + id);
+                    if (groupDiv) {
+                       groupDiv.classList.add('highlight-group');
+                       if (!scrolled) { groupDiv.scrollIntoView({ behavior: 'smooth', block: 'center' }); scrolled = true; }
+                    }
+                 }
+              }
+           });
+        }
+      }
     };
 
     document.getElementById('btn-show-deleted').onclick = () => {
@@ -81,73 +168,98 @@
        renderFields();
     };
 
-    function renderFields() {
-      const container = document.getElementById('form-container');
-      container.innerHTML = '';
-      
-      const filteredGroups = fieldsGroups.filter(g => showDeleted ? g.visible === false : g.visible !== false);
+    function renderNode(node, parentEl) {
+       if (!node || typeof node !== 'object') return;
 
-      if (filteredGroups.length === 0) {
-        container.innerHTML = showDeleted 
-          ? '<div style="text-align:center; padding: 30px; color:#aaa; font-size:12px;">휴지통이 비어 있습니다.</div>' 
-          : '<div style="text-align:center; padding: 30px; color:#aaa; font-size:12px;">수정할 태그 레이어를 찾지 못했습니다.</div>';
-        return;
-      }
-      
-      filteredGroups.forEach((group) => {
-        const fieldset = document.createElement('fieldset');
-        
-        const legend = document.createElement('legend');
-        const span = document.createElement('span');
-        span.className = 'legend-title';
-        span.innerText = group.visible === false ? "[삭제됨] " + group.groupName : group.groupName;
-        legend.appendChild(span);
+       if (node.type === "GROUP") {
+          const fieldset = document.createElement('fieldset');
+          fieldset.id = 'group-' + node.id;
+          
+          const legend = document.createElement('legend');
+          const span = document.createElement('span');
+          span.className = 'legend-title';
+          span.innerText = node.visible === false ? "[삭제됨] " + node.name : node.name;
+          legend.appendChild(span);
+          
+          const fieldsContainer = document.createElement('div');
+          fieldsContainer.className = 'fields-container';
+          span.onclick = () => {
+             fieldsContainer.style.display = fieldsContainer.style.display === "none" ? "block" : "none";
+             parent.postMessage({ pluginMessage: { type: 'focus-node', id: node.id } }, '*');
+          };
 
-        const fieldsContainer = document.createElement('div');
-        fieldsContainer.className = 'fields-container';
-        span.onclick = () => {
-           fieldsContainer.style.display = fieldsContainer.style.display === "none" ? "block" : "none";
-        };
+          if (node.name.includes("Layout_")) {
+             const actionDiv = document.createElement('div');
+             actionDiv.className = 'actions';
+             if (node.visible !== false) {
+                const addBtn = document.createElement('button');
+                addBtn.className = 'btn-action btn-add';
+                addBtn.innerText = '+ 행 복제';
+                addBtn.onclick = () => parent.postMessage({ pluginMessage: { type: 'clone-group', id: node.id } }, '*');
+                
+                const delBtn = document.createElement('button');
+                delBtn.className = 'btn-action btn-del';
+                delBtn.innerText = '- 행 숨기기';
+                delBtn.onclick = () => parent.postMessage({ pluginMessage: { type: 'soft-delete-group', id: node.id } }, '*');
+                actionDiv.appendChild(addBtn);
+                actionDiv.appendChild(delBtn);
+             } else {
+                const resBtn = document.createElement('button');
+                resBtn.className = 'btn-action btn-add';
+                resBtn.innerText = '↺ 복구하기';
+                resBtn.onclick = () => parent.postMessage({ pluginMessage: { type: 'restore-group', id: node.id } }, '*');
 
-        if (group.groupId && group.groupName.includes("Layout_")) {
-          const actionDiv = document.createElement('div');
-          actionDiv.className = 'actions';
-
-          if (group.visible !== false) {
-             const addBtn = document.createElement('button');
-             addBtn.className = 'btn-action btn-add';
-             addBtn.innerText = '+ 행 복제';
-             addBtn.onclick = () => parent.postMessage({ pluginMessage: { type: 'clone-group', id: group.groupId } }, '*');
-             
-             const delBtn = document.createElement('button');
-             delBtn.className = 'btn-action btn-del';
-             delBtn.innerText = '- 행 숨기기';
-             delBtn.onclick = () => parent.postMessage({ pluginMessage: { type: 'soft-delete-group', id: group.groupId } }, '*');
-
-             actionDiv.appendChild(addBtn);
-             actionDiv.appendChild(delBtn);
-          } else {
-             const resBtn = document.createElement('button');
-             resBtn.className = 'btn-action btn-add';
-             resBtn.innerText = '↺ 복구하기';
-             resBtn.onclick = () => parent.postMessage({ pluginMessage: { type: 'restore-group', id: group.groupId } }, '*');
-
-             const hardBtn = document.createElement('button');
-             hardBtn.className = 'btn-action btn-del';
-             hardBtn.innerText = '완전 삭제';
-             hardBtn.onclick = () => parent.postMessage({ pluginMessage: { type: 'hard-delete-group', id: group.groupId } }, '*');
-
-             actionDiv.appendChild(resBtn);
-             actionDiv.appendChild(hardBtn);
+                const hardBtn = document.createElement('button');
+                hardBtn.className = 'btn-action btn-del';
+                hardBtn.innerText = '완전 삭제';
+                hardBtn.onclick = () => parent.postMessage({ pluginMessage: { type: 'hard-delete-group', id: node.id } }, '*');
+                actionDiv.appendChild(resBtn);
+                actionDiv.appendChild(hardBtn);
+             }
+             legend.appendChild(actionDiv);
           }
-          legend.appendChild(actionDiv);
-        }
-
-        fieldset.appendChild(legend);
-
-        group.fields.forEach((field) => {
+          fieldset.appendChild(legend);
+          
+          if (Array.isArray(node.children)) {
+             node.children.forEach(child => renderNode(child, fieldsContainer));
+          }
+          
+          fieldset.appendChild(fieldsContainer);
+          parentEl.appendChild(fieldset);
+       } 
+       else if (node.type === "SUBGROUP") {
+          const subWrapper = document.createElement('div');
+          subWrapper.className = 'sub-group';
+          subWrapper.id = 'subgroup-' + node.id;
+          
+          const subHeader = document.createElement('div');
+          subHeader.className = 'sub-group-header';
+          subHeader.innerHTML = `<span>${node.name}</span><span class="sub-toggle">▼</span>`;
+          
+          const subFields = document.createElement('div');
+          subFields.className = 'sub-group-fields';
+          
+          subHeader.onclick = () => {
+             subFields.style.display = subFields.style.display === "none" ? "flex" : "none";
+             subHeader.querySelector('.sub-toggle').innerText = subFields.style.display === "none" ? "▶" : "▼";
+             parent.postMessage({ pluginMessage: { type: 'focus-node', id: node.id } }, '*');
+          };
+          
+          subWrapper.appendChild(subHeader);
+          
+          if (Array.isArray(node.children)) {
+             node.children.forEach(child => renderNode(child, subFields));
+          }
+          
+          subWrapper.appendChild(subFields);
+          parentEl.appendChild(subWrapper);
+       }
+       else if (node.type === "FIELD") {
+          const field = node.fieldData;
+          if (!field) return;
           const div = document.createElement('div');
           div.className = 'field';
+          div.id = 'field-' + field.id;
           
           const labelRow = document.createElement('div');
           labelRow.className = 'label-row';
@@ -238,26 +350,46 @@
 
           div.appendChild(labelRow);
           div.appendChild(inputRow);
-          fieldsContainer.appendChild(div);
-        });
+          parentEl.appendChild(div);
+       }
+    }
 
-        fieldset.appendChild(fieldsContainer);
-        container.appendChild(fieldset);
-      });
+    function renderFields() {
+      const container = document.getElementById('form-container');
+      container.innerHTML = '';
+      
+      if (!fieldsGroups || !Array.isArray(fieldsGroups)) {
+         container.innerHTML = '<div style="text-align:center; padding: 30px; color:red; font-weight:bold; font-size:12px;">데이터를 정상적으로 불러오지 못했습니다.</div>';
+         return;
+      }
+      
+      const filteredGroups = fieldsGroups.filter(g => showDeleted ? g.visible === false : g.visible !== false);
+
+      if (filteredGroups.length === 0) {
+        container.innerHTML = showDeleted 
+          ? '<div style="text-align:center; padding: 30px; color:#aaa; font-size:12px;">휴지통이 비어 있습니다.</div>' 
+          : '<div style="text-align:center; padding: 30px; color:#aaa; font-size:12px;">수정할 태그 레이어를 찾지 못했습니다.</div>';
+        return;
+      }
+      
+      filteredGroups.forEach(g => renderNode(g, container));
     }
 
     document.getElementById('btn-update').onclick = () => {
       const updates = [];
-      fieldsGroups.forEach((group) => {
-        group.fields.forEach((field) => {
-          if (field.type === "TEXT") {
-            const input = document.getElementById('input-' + field.id);
+      function extractUpdates(node) {
+         if (!node) return;
+         if (node.type === "FIELD" && node.fieldData && node.fieldData.type === "TEXT") {
+            const input = document.getElementById('input-' + node.id);
             if (input && input.value !== undefined) {
-               updates.push({ id: field.id, characters: input.value });
+               updates.push({ id: node.id, characters: input.value });
             }
-          }
-        });
-      });
+         }
+         if (node.children && Array.isArray(node.children)) {
+            node.children.forEach(extractUpdates);
+         }
+      }
+      fieldsGroups.forEach(extractUpdates);
       const btn = document.getElementById('btn-update');
       btn.innerText = "전송 중...";
       btn.disabled = true;

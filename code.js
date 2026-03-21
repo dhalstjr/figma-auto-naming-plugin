@@ -196,36 +196,36 @@ async function openUI(targetFrame) {
       
       for (const t of targetItems) {
         let p = t.parent;
-        let groupName = "기본 템플릿 컴포넌트";
-        let groupId = targetFrame.id; 
-        
+        let layoutGroup = targetFrame;
+        let autoLayoutSubGroup = null;
+
         while (p && p !== targetFrame.parent) {
+          if (p.type === "FRAME" && p.layoutMode !== "NONE" && !p.name.startsWith("Layout_")) {
+             autoLayoutSubGroup = p;
+          }
           if (p.name.startsWith("Layout_")) {
-            groupName = p.name;
-            groupId = p.id;
-            break;
+             layoutGroup = p;
+             break;
           }
           p = p.parent;
         }
+
+        let topGroupId = layoutGroup.id;
+        let topGroupName = layoutGroup === targetFrame ? "기본 템플릿 컴포넌트" : layoutGroup.name;
         
-        const parentNode = figma.getNodeById(groupId);
         let layoutDir = "";
-        let isVisible = parentNode ? parentNode.visible : true;
+        let isVisible = layoutGroup.visible !== false;
         
-        if (parentNode && parentNode.layoutMode) {
-           if (parentNode.layoutMode === "VERTICAL") layoutDir = " [세로 정렬]";
-           else if (parentNode.layoutMode === "HORIZONTAL") layoutDir = " [가로 정렬]";
-        }
+        if (layoutGroup.layoutMode === "VERTICAL") layoutDir = " [세로 정렬]";
+        else if (layoutGroup.layoutMode === "HORIZONTAL") layoutDir = " [가로 정렬]";
         
-        if (!fieldGroupsMap[groupId]) {
-          fieldGroupsMap[groupId] = { 
-            groupId, 
-            groupName: groupName + layoutDir, 
-            visible: isVisible,
-            fields: [] 
+        if (!fieldGroupsMap[topGroupId]) {
+          fieldGroupsMap[topGroupId] = { 
+            id: topGroupId, name: topGroupName + layoutDir, type: "GROUP", visible: isVisible, rootChildren: [], childrenMap: {} 
           };
         }
-        
+
+        let fieldData = null;
         if (t.type === "TEXT") {
           let semanticLabel = t.characters.substring(0, 16).replace(/\n/g, ' ');
           if (t.characters.length > 16) semanticLabel += "...";
@@ -250,33 +250,58 @@ async function openUI(targetFrame) {
              fillHex = "#" + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).padStart(6, '0');
           }
 
-          fieldGroupsMap[groupId].fields.push({
-            id: t.id,
-            name: t.name,
-            type: "TEXT",
+          fieldData = {
+            id: t.id, name: t.name, type: "TEXT",
             semanticLabel: semanticLabel || "(비어있음)",
-            characters: t.characters,
-            fontSize: Math.round(Number(fontSz) * 10) / 10,
-            fontWeight: fontWeight,
-            fillColor: fillHex
-          });
+            characters: t.characters, fontSize: Math.round(Number(fontSz) * 10) / 10,
+            fontWeight: fontWeight, fillColor: fillHex
+          };
         } else {
           let thumbBase64 = null;
           try {
              const bytes = await t.exportAsync({ format: 'PNG', constraint: { type: 'WIDTH', value: 70 } });
              thumbBase64 = figma.base64Encode(bytes);
           } catch(e) {}
-          
-          fieldGroupsMap[groupId].fields.push({
-            id: t.id,
-            name: t.name,
-            type: "IMAGE",
+          fieldData = {
+            id: t.id, name: t.name, type: "IMAGE",
             semanticLabel: `🖼️ [이미지 변경] ` + t.name,
             thumbnail: thumbBase64 ? 'data:image/png;base64,' + thumbBase64 : null
-          });
+          };
+        }
+        
+        const fieldNode = { id: t.id, name: t.name, type: "FIELD", fieldData: fieldData };
+
+        if (!autoLayoutSubGroup) {
+           fieldGroupsMap[topGroupId].rootChildren.push(fieldNode);
+        } else {
+           const subGroupId = autoLayoutSubGroup.id;
+           if (!fieldGroupsMap[topGroupId].childrenMap[subGroupId]) {
+              let subName = "";
+              if (autoLayoutSubGroup.name.startsWith("Frame ")) {
+                 const firstText = autoLayoutSubGroup.findOne(n => n.type === "TEXT" && n.characters.length > 0);
+                 const preview = firstText ? firstText.characters.substring(0, 5) : "빈 그룹";
+                 subName = `🏷️ [그룹] ${preview}...`;
+              } else {
+                 subName = `🏷️ ${autoLayoutSubGroup.name}`;
+              }
+              fieldGroupsMap[topGroupId].childrenMap[subGroupId] = {
+                 id: subGroupId, name: subName, type: "SUBGROUP", children: []
+              };
+           }
+           fieldGroupsMap[topGroupId].childrenMap[subGroupId].children.push(fieldNode);
         }
       }
-      return Object.values(fieldGroupsMap);
+
+      const result = [];
+      for (const g of Object.values(fieldGroupsMap)) {
+         const groupNode = { id: g.id, name: g.name, type: "GROUP", visible: g.visible, children: [] };
+         if (g.rootChildren) groupNode.children.push(...g.rootChildren);
+         for (const sub of Object.values(g.childrenMap)) {
+            groupNode.children.push(sub);
+         }
+         result.push(groupNode);
+      }
+      return result;
     }
 
     figma.showUI(__html__, { width: 380, height: 680, themeColors: true });
@@ -284,6 +309,21 @@ async function openUI(targetFrame) {
 
     figma.ui.onmessage = async (msg) => {
       
+      async function checkAndReportMissingFonts(node) {
+        if (!node || node.type !== "TEXT" || !node.hasMissingFont) return false;
+        const len = node.characters.length;
+        const missingFonts = [];
+        const fontsToLoad = len > 0 ? node.getRangeAllFontNames(0, len) : (node.fontName !== figma.mixed ? [node.fontName] : []);
+        for (const f of fontsToLoad) {
+            try { await figma.loadFontAsync(f); }
+            catch(e) { if (!missingFonts.some(mf => mf.family === f.family && mf.style === f.style)) missingFonts.push(f); }
+        }
+        if (missingFonts.length > 0) {
+            figma.ui.postMessage({ type: 'SHOW_FONT_MODAL', fonts: missingFonts });
+        }
+        return true;
+      }
+
       if (msg.type === 'focus-node') {
         const node = figma.getNodeById(msg.id);
         if (node && node.visible) {
@@ -300,13 +340,14 @@ async function openUI(targetFrame) {
             const parent = targetNode.parent;
             
             // 💡 세로로 나열되도록 속성 강제 변환 병합
-            if (parent.layoutMode === "HORIZONTAL") {
+            if (parent.layoutMode !== "VERTICAL") {
                parent.layoutMode = "VERTICAL";
             }
             
             const clone = targetNode.clone();
             const index = parent.children.indexOf(targetNode);
             parent.insertChild(index + 1, clone);
+            clone.layoutAlign = "STRETCH";
             clone.visible = true; 
             
             // 찌그러짐 방지를 위해 재귀적으로 상단 컨테이너들의 Hug Properties 강제복원
@@ -364,20 +405,17 @@ async function openUI(targetFrame) {
         const node = figma.getNodeById(msg.id);
         if (node && node.type === "TEXT") {
           try {
-            if (node.hasMissingFont) {
-               figma.notify("폰트 누락 제약", {error: true});
+            if (await checkAndReportMissingFonts(node)) return;
+            const len = node.characters.length;
+            if (len > 0) {
+              const fontsToLoad = node.getRangeAllFontNames(0, len);
+              for (const f of fontsToLoad) { await figma.loadFontAsync(f); }
+              node.setRangeFontSize(0, len, msg.size);
             } else {
-               const len = node.characters.length;
-               if (len > 0) {
-                 const fontsToLoad = node.getRangeAllFontNames(0, len);
-                 for (const f of fontsToLoad) { await figma.loadFontAsync(f); }
-                 node.setRangeFontSize(0, len, msg.size);
-               } else {
-                 node.fontSize = msg.size;
-               }
-               applyLayoutGuard(node);
-               highlightNode(node);
+              node.fontSize = msg.size;
             }
+            applyLayoutGuard(node);
+            highlightNode(node);
           } catch(e) {}
         }
       }
@@ -386,10 +424,12 @@ async function openUI(targetFrame) {
         const node = figma.getNodeById(msg.id);
         if (node && node.type === "TEXT") {
           try {
+            if (await checkAndReportMissingFonts(node)) return;
             const font = node.fontName === figma.mixed ? node.getRangeFontName(0, 1) : node.fontName;
-            if (font && !node.hasMissingFont) {
+            if (font) {
                const newFont = { family: font.family, style: msg.weight };
-               await figma.loadFontAsync(newFont);
+               try { await figma.loadFontAsync(newFont); }
+               catch(e) { figma.ui.postMessage({ type: 'SHOW_FONT_MODAL', fonts: [newFont] }); return; }
                const len = node.characters.length;
                if (len > 0) node.setRangeFontName(0, len, newFont);
                else node.fontName = newFont;
@@ -446,7 +486,7 @@ async function openUI(targetFrame) {
           const node = figma.getNodeById(update.id);
           if (node && node.type === "TEXT" && node.characters !== update.characters) {
             try {
-              if (node.hasMissingFont) continue; 
+              if (await checkAndReportMissingFonts(node)) return; 
               
               const len = node.characters.length;
               if (len > 0) {
@@ -488,6 +528,12 @@ async function openUI(targetFrame) {
         figma.closePlugin();
       }
     };
+
+    figma.on("selectionchange", () => {
+       const selection = figma.currentPage.selection;
+       const ids = selection.map(node => node.id);
+       figma.ui.postMessage({ type: 'selection-change', ids });
+    });
 }
 
 main();
