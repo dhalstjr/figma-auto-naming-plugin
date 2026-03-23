@@ -187,100 +187,142 @@ async function openUI(targetFrame) {
     }
 
     async function getGroupedFields() {
-      const targetItems = targetFrame.findAll(n => 
-        n.name.startsWith("#") || n.name.startsWith("@") || n.name === "#Title"
-      );
-      targetItems.sort(sortByCoordinates);
+      async function extractTree(node) {
+        if (!node.visible && node.type !== "FRAME") return null;
+        let isNodeVisible = node.visible;
+        
+        if (node.type === "TEXT") {
+          let semanticLabel = node.characters.substring(0, 16).replace(/\n/g, ' ');
+          if (node.characters.length > 16) semanticLabel += "...";
+          if (node.name === "#Title") semanticLabel = `👑 ` + semanticLabel;
+          else if (node.name === "#SubTitle") semanticLabel = `🔹 ` + semanticLabel;
 
-      const fieldGroupsMap = {};
-      
-      for (const t of targetItems) {
-        let p = t.parent;
-        let groupName = "기본 템플릿 컴포넌트";
-        let groupId = targetFrame.id; 
-        
-        while (p && p !== targetFrame.parent) {
-          if (p.name.startsWith("Layout_")) {
-            groupName = p.name;
-            groupId = p.id;
-            break;
-          }
-          p = p.parent;
-        }
-        
-        const parentNode = figma.getNodeById(groupId);
-        let layoutDir = "";
-        let isVisible = parentNode ? parentNode.visible : true;
-        
-        if (parentNode && parentNode.layoutMode) {
-           if (parentNode.layoutMode === "VERTICAL") layoutDir = " [세로 정렬]";
-           else if (parentNode.layoutMode === "HORIZONTAL") layoutDir = " [가로 정렬]";
-        }
-        
-        if (!fieldGroupsMap[groupId]) {
-          fieldGroupsMap[groupId] = { 
-            groupId, 
-            groupName: groupName + layoutDir, 
-            visible: isVisible,
-            fields: [] 
-          };
-        }
-        
-        if (t.type === "TEXT") {
-          let semanticLabel = t.characters.substring(0, 16).replace(/\n/g, ' ');
-          if (t.characters.length > 16) semanticLabel += "...";
-          if (t.name === "#Title") semanticLabel = `👑 ` + semanticLabel;
-          else if (t.name === "#SubTitle") semanticLabel = `🔹 ` + semanticLabel;
-
-          let fontSz = t.fontSize;
-          if (fontSz === figma.mixed) fontSz = t.getRangeFontSize(0, 1) || 14;
+          let fontSz = node.fontSize;
+          if (fontSz === figma.mixed) fontSz = node.getRangeFontSize(0, 1) || 14;
           
           let fontWeight = "Regular";
-          if (t.fontName !== figma.mixed) fontWeight = t.fontName.style;
+          if (node.fontName !== figma.mixed) fontWeight = node.fontName.style;
           else {
-             const fn = t.getRangeFontName(0, 1);
+             const fn = node.getRangeFontName(0, 1);
              if (fn) fontWeight = fn.style;
           }
           
           let fillHex = "#000000";
-          if (t.fills !== figma.mixed && t.fills.length > 0 && t.fills[0].type === "SOLID") {
-             const r = Math.round(t.fills[0].color.r * 255);
-             const g = Math.round(t.fills[0].color.g * 255);
-             const b = Math.round(t.fills[0].color.b * 255);
+          if (node.fills !== figma.mixed && node.fills.length > 0 && node.fills[0].type === "SOLID") {
+             const r = Math.round(node.fills[0].color.r * 255);
+             const g = Math.round(node.fills[0].color.g * 255);
+             const b = Math.round(node.fills[0].color.b * 255);
              fillHex = "#" + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).padStart(6, '0');
           }
-
-          fieldGroupsMap[groupId].fields.push({
-            id: t.id,
-            name: t.name,
+           
+          return {
+            id: node.id,
             type: "TEXT",
+            name: node.name,
             semanticLabel: semanticLabel || "(비어있음)",
-            characters: t.characters,
+            characters: node.characters,
             fontSize: Math.round(Number(fontSz) * 10) / 10,
             fontWeight: fontWeight,
-            fillColor: fillHex
-          });
-        } else {
+            fillColor: fillHex,
+            visible: isNodeVisible
+          };
+        }
+        
+        const isImage = (node.type === "IMAGE") || (node.fills && Array.isArray(node.fills) && node.fills.some(f => f.type === "IMAGE"));
+        if (isImage) {
           let thumbBase64 = null;
           try {
-             const bytes = await t.exportAsync({ format: 'PNG', constraint: { type: 'WIDTH', value: 70 } });
-             thumbBase64 = figma.base64Encode(bytes);
+            const bytes = await node.exportAsync({ format: 'PNG', constraint: { type: 'WIDTH', value: 70 } });
+            thumbBase64 = figma.base64Encode(bytes);
           } catch(e) {}
-          
-          fieldGroupsMap[groupId].fields.push({
-            id: t.id,
-            name: t.name,
+          return {
+            id: node.id,
             type: "IMAGE",
-            semanticLabel: `🖼️ [이미지 변경] ` + t.name,
-            thumbnail: thumbBase64 ? 'data:image/png;base64,' + thumbBase64 : null
-          });
+            name: node.name,
+            semanticLabel: `🖼️ [이미지 변경] ` + node.name,
+            thumbnail: thumbBase64 ? 'data:image/png;base64,' + thumbBase64 : null,
+            visible: isNodeVisible
+          };
         }
+
+        if ("children" in node) {
+          const isAutoLayout = node.layoutMode && node.layoutMode !== "NONE";
+          const childrenNodes = [];
+          let hasSuspiciousFrame = false;
+
+          for (const child of node.children) {
+            if (child.type === "FRAME" && (!child.layoutMode || child.layoutMode === "NONE")) {
+              hasSuspiciousFrame = true;
+            }
+            const childResult = await extractTree(child);
+            if (childResult) {
+               if (Array.isArray(childResult)) childrenNodes.push(...childResult);
+               else childrenNodes.push(childResult);
+            }
+          }
+          
+          if (childrenNodes.length === 0 && !isAutoLayout && node !== targetFrame) return null;
+
+          if (isAutoLayout || node === targetFrame) {
+             let groupName = "🏷️ 그룹";
+             const allTexts = [];
+             let hasMedia = false;
+             function gatherTexts(item) {
+                if (item.type === "TEXT") allTexts.push(item.characters);
+                if (item.type === "IMAGE") hasMedia = true;
+                if (item.children) item.children.forEach(gatherTexts);
+             }
+             childrenNodes.forEach(gatherTexts);
+             
+             const textCombined = allTexts.join(" ");
+             
+             let longestText = "";
+             allTexts.forEach(t => { if (t.length > longestText.length) longestText = t; });
+             let longestPrefix = longestText.length > 0 ? longestText.substring(0, 7) : "내용없음";
+             let firstText = allTexts.length > 0 ? allTexts[0] : "내용없음";
+             let firstPrefix = firstText.substring(0, 7);
+
+             if (textCombined.includes("만") || textCombined.includes("원")) {
+               groupName = `🏷️ [${longestPrefix}...] 가격 세트`;
+             } else if (textCombined.includes("회") || textCombined.includes("샷") || textCombined.includes("cc") || textCombined.includes("명") || textCombined.includes("개")) {
+               groupName = `🏷️ [${firstText}] 횟수/옵션`;
+             } else {
+               groupName = `🏷️ [${firstPrefix}...] 그룹`;
+             }
+             
+             let finalNodeName = node.name;
+             if (allTexts.length === 0 && !hasMedia) {
+                finalNodeName += " ⚠️ 텍스트 없음 (정리 필요)";
+             }
+
+             return {
+               id: node.id,
+               type: "GROUP",
+               name: finalNodeName,
+               autoName: groupName,
+               layoutMode: node.layoutMode || "NONE",
+               children: childrenNodes,
+               visible: isNodeVisible,
+               hasWarning: hasSuspiciousFrame
+             };
+          } else {
+             return childrenNodes;
+          }
+        }
+        return null;
       }
-      return Object.values(fieldGroupsMap);
+      
+      const tree = await extractTree(targetFrame);
+      return tree ? (Array.isArray(tree) ? tree : [tree]) : [];
     }
 
     figma.showUI(__html__, { width: 380, height: 680, themeColors: true });
     figma.ui.postMessage({ type: 'init-fields', groups: await getGroupedFields() });
+
+    figma.on("selectionchange", () => {
+      const selectionIds = figma.currentPage.selection.map(n => n.id);
+      figma.ui.postMessage({ type: 'selection-changed', ids: selectionIds });
+    });
 
     figma.ui.onmessage = async (msg) => {
       
