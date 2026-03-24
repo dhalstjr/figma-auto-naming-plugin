@@ -1,535 +1,228 @@
 async function main() {
   try {
     const selection = figma.currentPage.selection;
-    if (
-      selection.length === 0 || 
-      !(selection[0].type === "FRAME" || selection[0].type === "COMPONENT" || selection[0].type === "INSTANCE")
-    ) {
+    if (selection.length === 0 || !(selection[0].type === "FRAME" || selection[0].type === "COMPONENT" || selection[0].type === "INSTANCE")) {
       figma.notify("기준이 되는 프레임이나 컴포넌트를 선택해 주세요.", { error: true });
       figma.closePlugin();
       return;
     }
 
     const targetFrame = selection[0];
-    const isFormatted = targetFrame.findOne(n => n.name.startsWith("#Text") || n.name.startsWith("@Image") || n.name.startsWith("Layout_"));
-    
-    if (!isFormatted) {
-      figma.notify("초기 템플릿 1단계 자동 세팅을 진행합니다...");
-      await runFormatting(targetFrame);
-    }
-    
     openUI(targetFrame);
-
   } catch (err) {
-    const errorMsg = err instanceof Error ? err.message : String(err);
-    figma.notify("오류가 발생했습니다: " + errorMsg, { error: true });
-    console.error("Plugin crashed:", err);
-    figma.closePlugin(); 
+    console.error(err);
+    figma.closePlugin();
   }
 }
 
-async function runFormatting(targetFrame) {
-    function sortByCoordinates(a, b) {
-      const yA = a.absoluteBoundingBox ? a.absoluteBoundingBox.y : a.y;
-      const yB = b.absoluteBoundingBox ? b.absoluteBoundingBox.y : b.y;
-      if (Math.abs(yA - yB) > 10) return yA - yB;
-      const xA = a.absoluteBoundingBox ? a.absoluteBoundingBox.x : a.x;
-      const xB = b.absoluteBoundingBox ? b.absoluteBoundingBox.x : b.x;
-      return xA - xB;
-    }
-
-    const textNodes = targetFrame.findAll(node => node.type === "TEXT");
-    
-    const uniqueFontsToLoad = [];
-    for (const t of textNodes) {
-      if (t.fontName !== figma.mixed) uniqueFontsToLoad.push(t.fontName);
-      else {
-        const f = t.getRangeFontName(0, 1);
-        if (f && f !== figma.mixed) uniqueFontsToLoad.push(f);
-      }
-    }
-    for (const font of uniqueFontsToLoad) {
-      try { await figma.loadFontAsync(font); } catch(e) {}
-    }
-
-    function getFontSize(n) { return n.fontSize === figma.mixed ? (n.getRangeFontSize(0, 1) || 0) : (n.fontSize || 0); }
-
-    textNodes.sort((a,b) => {
-      const sA = getFontSize(a), sB = getFontSize(b);
-      if (sA !== sB) return sB - sA;
-      return sortByCoordinates(a, b);
-    });
-
-    const titleNode = textNodes.length > 0 ? textNodes.shift() : null;
-    const subtitleNode = textNodes.length > 0 ? textNodes.shift() : null;
-
-    if (titleNode) { try { titleNode.name = "#Title"; } catch(e){} }
-    if (subtitleNode) { try { subtitleNode.name = "#SubTitle"; } catch(e){} }
-
-    textNodes.sort(sortByCoordinates);
-    textNodes.forEach((n, i) => { try { n.name = `#Text_${i+1}`; } catch(e){} });
-
-    const imageNodes = targetFrame.findAll(n => {
-      if ('fills' in n && Array.isArray(n.fills)) return n.fills.some(f => f.type === "IMAGE");
-      return false;
-    });
-    imageNodes.sort((a,b) => {
-      const aa = a.width*a.height, ab = b.width*b.height;
-      if (aa !== ab) return ab - aa;
-      return sortByCoordinates(a, b);
-    });
-    const mainImg = imageNodes.shift();
-    if (mainImg) { try { mainImg.name = "@Main_Image"; } catch(e){} }
-    imageNodes.sort(sortByCoordinates);
-    imageNodes.forEach((n, i) => { try { n.name = `@Image_${i+1}`; } catch(e){} });
-
-    const allFrames = targetFrame.findAll(n => n.type === "FRAME");
-    const layoutNodes = [];
-    allFrames.forEach(frame => {
-      if (frame.children && frame.children.length > 0) {
-        if (frame.layoutMode === "NONE") {
-          try {
-            frame.layoutMode = "VERTICAL";
-            let spacing = 0;
-            if (frame.children.length >= 2) {
-              const sortedKids = [...frame.children].sort((a, b) => a.y - b.y);
-              const gaps = [];
-              for (let i = 1; i < sortedKids.length; i++) {
-                gaps.push(sortedKids[i].y - (sortedKids[i - 1].y + sortedKids[i - 1].height));
-              }
-              spacing = Math.max(0, Math.round(gaps.reduce((s, g) => s + g, 0) / gaps.length));
-            }
-            frame.itemSpacing = spacing;
-            layoutNodes.push(frame);
-          } catch(e) {}
-        } else {
-          layoutNodes.push(frame);
-        }
-      }
-    });
-
-    layoutNodes.sort(sortByCoordinates);
-    layoutNodes.forEach((n, i) => { try { n.name = `Layout_${i+1}`; } catch(e){} });
-    
-    for (const layout of layoutNodes) {
-      try {
-        if (layout.layoutMode === "VERTICAL") layout.primaryAxisSizingMode = "AUTO";
-        else if (layout.layoutMode === "HORIZONTAL") layout.counterAxisSizingMode = "AUTO";
-      } catch(e) {}
-    }
-
-    const allProcessedTexts = [titleNode, subtitleNode, ...textNodes].filter(n => n !== null);
-    for (const t of allProcessedTexts) {
-      try {
-        if (t.parent && t.parent.layoutMode !== "NONE") t.layoutAlign = "STRETCH";
-        t.textAutoResize = "HEIGHT";
-      } catch(e){}
-    }
-}
-
-
 async function openUI(targetFrame) {
-    function highlightNode(node) {
-      try {
-        const oldStrokes = [...node.strokes];
-        const oldWeight = node.strokeWeight;
-        node.strokes = [{type: 'SOLID', color: {r:0.09, g:0.62, b:0.98}}]; 
-        node.strokeWeight = Math.max(3, oldWeight * 2);
-        setTimeout(() => {
-          try {
-            node.strokes = oldStrokes;
-            node.strokeWeight = oldWeight;
-          } catch(e){}
-        }, 800);
-      } catch(e){}
+  function highlightNode(node) {
+    try {
+      const oldStrokes = [...node.strokes];
+      const oldWeight = node.strokeWeight;
+      node.strokes = [{ type: 'SOLID', color: { r: 0.09, g: 0.62, b: 0.98 } }];
+      node.strokeWeight = Math.max(3, oldWeight * 2);
+      setTimeout(() => {
+        try { node.strokes = oldStrokes; node.strokeWeight = oldWeight; } catch (e) { }
+      }, 800);
+    } catch (e) { }
+  }
+
+  async function getGroupedFields() {
+    const result = [];
+    const processedNodes = new Set();
+    const rowCardsMap = new Map(); // key: Layout_ frame ID
+    const standaloneFields = [];
+
+    const allNodes = targetFrame.findAll(n => n.type === "TEXT" || n.type === "IMAGE" || (n.fills && Array.isArray(n.fills) && n.fills.some(f => f.type === "IMAGE")));
+
+    for (const node of allNodes) {
+       if (processedNodes.has(node.id)) continue;
+       processedNodes.add(node.id);
+
+       let parentRow = null;
+       let curr = node.parent;
+       while (curr && curr !== targetFrame && curr.type !== "PAGE") {
+          if (curr.type === "FRAME" && curr.layoutMode === "VERTICAL" && curr.name.startsWith("Layout_")) {
+             parentRow = curr;
+             break;
+          }
+          curr = curr.parent;
+       }
+
+       let isImage = node.type === "IMAGE" || (node.fills && Array.isArray(node.fills) && node.fills.some(f => f.type === "IMAGE"));
+       
+       let fieldData = null;
+       if (!isImage) { // Must be TEXT
+          let fSize = 12; let fWeight = "Regular"; let fColor = "#000000";
+          if (node.fontSize !== figma.mixed) fSize = node.fontSize;
+          if (node.fontName !== figma.mixed) fWeight = node.fontName.style;
+          if (node.fills !== figma.mixed && node.fills.length > 0 && node.fills[0].type === 'SOLID') {
+             const r = Math.round(node.fills[0].color.r * 255).toString(16).padStart(2, '0');
+             const g = Math.round(node.fills[0].color.g * 255).toString(16).padStart(2, '0');
+             const b = Math.round(node.fills[0].color.b * 255).toString(16).padStart(2, '0');
+             fColor = `#${r}${g}${b}`.toUpperCase();
+          } else { fColor = "mixed"; }
+
+          fieldData = {
+            id: node.id, type: "FIELD", fieldType: "TEXT",
+            characters: node.characters, label: node.characters.substring(0, 10).replace(/\n/g, ' ') || "텍스트",
+            fontSize: fSize, fontWeight: fWeight, fillColor: fColor,
+            visible: node.visible
+          };
+       } else {
+          fieldData = {
+            id: node.id, type: "FIELD", fieldType: "IMAGE",
+            label: "이미지 변경", visible: node.visible
+          };
+       }
+
+       if (parentRow) {
+          if (!rowCardsMap.has(parentRow.id)) {
+             rowCardsMap.set(parentRow.id, { node: parentRow, fields: [] });
+          }
+          rowCardsMap.get(parentRow.id).fields.push(fieldData);
+       } else {
+          standaloneFields.push(fieldData);
+       }
     }
 
-    // 부모를 거슬러 올라가며 전체 틀이 찌그러지지 않도록 레이아웃 높이/넘침 방어를 강제로 재계산합니다.
-    function applyRecursiveLayoutGuard(startNode) {
-      let current = startNode;
-      while (current && current.type !== "PAGE") {
-        if (current.type === "FRAME" && current.layoutMode !== "NONE") {
-           try {
-              if (current.layoutMode === "VERTICAL") {
-                 current.primaryAxisSizingMode = "AUTO"; // 세로 높이 Hug contents 보장
-                 current.clipsContent = true; // 넘침 방지
-              } else if (current.layoutMode === "HORIZONTAL") {
-                 current.counterAxisSizingMode = "AUTO"; // 세로 높이 교차축 Hug 보장
-                 current.clipsContent = true;
-              }
-           } catch(e){}
-        }
-        if (current === targetFrame) break; // 플러그인 실행 루트 캔버스 범위까지만
-        current = current.parent;
-      }
+    // Convert Map back to array format
+    for (const [rowId, data] of rowCardsMap.entries()) {
+        const rowNode = data.node;
+        const fields = data.fields;
+        
+        let longestText = "";
+        let numberAttr = "";
+        fields.forEach(f => {
+          if (f.fieldType === "TEXT") {
+             if (f.characters.length > longestText.length) longestText = f.characters;
+             const lowerT = f.characters.toLowerCase();
+             if (/[0-9]/.test(lowerT) && (lowerT.includes('만') || lowerT.includes('원') || lowerT.includes('샷') || lowerT.includes('회') || lowerT.includes('%'))) {
+               if (!numberAttr || f.characters.length < numberAttr.length) numberAttr = f.characters;
+             }
+          }
+        });
+
+        let mainLabel = longestText.substring(0, 10).replace(/\n/g, ' ');
+        if (longestText.length > 10) mainLabel += "...";
+        const autoName = numberAttr ? `🏷️ [${mainLabel}] ${numberAttr.substring(0, 8).replace(/\n/g, '')}` : `🏷️ [${mainLabel}] 그룹`;
+
+        result.push({
+          type: "ROW_CARD", id: rowNode.id, name: rowNode.name, autoName: autoName,
+          visible: rowNode.visible, fields: fields
+        });
     }
+
+    result.push(...standaloneFields);
     
-    function applyLayoutGuard(node) {
-      try {
-        if (node.type === "TEXT") {
-           node.textAutoResize = "HEIGHT";
-           // 자기가 삐져나가지 않도록 STRETCH 허용
-           if (node.parent && node.parent.layoutMode === "VERTICAL") {
-              node.layoutAlign = "STRETCH";
-           }
-        }
-        if (node.parent) applyRecursiveLayoutGuard(node.parent);
-      } catch(e){}
+    return result;
+  }
+
+  figma.showUI(__html__, { width: 380, height: 680, themeColors: true });
+  figma.ui.postMessage({ type: 'init-fields', groups: await getGroupedFields() });
+
+  figma.on("selectionchange", () => {
+    const selectionIds = figma.currentPage.selection.map(n => n.id);
+    figma.ui.postMessage({ type: 'selection-changed', ids: selectionIds });
+  });
+
+  figma.ui.onmessage = async (msg) => {
+    if (msg.type === 'focus-node') {
+      const node = figma.getNodeById(msg.id);
+      if (node && node.visible) {
+        figma.currentPage.selection = [node];
+        figma.viewport.scrollAndZoomIntoView([node]);
+        highlightNode(node);
+      }
     }
 
-    function sortByCoordinates(a, b) {
-      const yA = a.absoluteBoundingBox ? a.absoluteBoundingBox.y : a.y;
-      const yB = b.absoluteBoundingBox ? b.absoluteBoundingBox.y : b.y;
-      if (Math.abs(yA - yB) > 10) return yA - yB;
-      const xA = a.absoluteBoundingBox ? a.absoluteBoundingBox.x : a.x;
-      const xB = b.absoluteBoundingBox ? b.absoluteBoundingBox.x : b.x;
-      return xA - xB;
+    if (msg.type === 'clone-group') {
+      const targetNode = figma.getNodeById(msg.id);
+      if (targetNode && targetNode.type === "FRAME" && targetNode.parent) {
+        try {
+          const clone = targetNode.clone();
+          targetNode.parent.insertChild(targetNode.parent.children.indexOf(targetNode) + 1, clone);
+          clone.visible = true;
+          figma.notify(`➕ 항목이 복제되었습니다.`);
+          figma.ui.postMessage({ type: 'init-fields', groups: await getGroupedFields() });
+        } catch (e) { figma.notify("복제 오류 발생", { error: true }); }
+      }
     }
 
-    async function getGroupedFields() {
-      async function extractTree(node) {
-        if (!node.visible && node.type !== "FRAME") return null;
-        let isNodeVisible = node.visible;
-        
-        if (node.type === "TEXT") {
-          let semanticLabel = node.characters.substring(0, 16).replace(/\n/g, ' ');
-          if (node.characters.length > 16) semanticLabel += "...";
-          if (node.name === "#Title") semanticLabel = `👑 ` + semanticLabel;
-          else if (node.name === "#SubTitle") semanticLabel = `🔹 ` + semanticLabel;
-
-          let fontSz = node.fontSize;
-          if (fontSz === figma.mixed) fontSz = node.getRangeFontSize(0, 1) || 14;
-          
-          let fontWeight = "Regular";
-          if (node.fontName !== figma.mixed) fontWeight = node.fontName.style;
-          else {
-             const fn = node.getRangeFontName(0, 1);
-             if (fn) fontWeight = fn.style;
-          }
-          
-          let fillHex = "#000000";
-          if (node.fills !== figma.mixed && node.fills.length > 0 && node.fills[0].type === "SOLID") {
-             const r = Math.round(node.fills[0].color.r * 255);
-             const g = Math.round(node.fills[0].color.g * 255);
-             const b = Math.round(node.fills[0].color.b * 255);
-             fillHex = "#" + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).padStart(6, '0');
-          }
-           
-          return {
-            id: node.id,
-            type: "TEXT",
-            name: node.name,
-            semanticLabel: semanticLabel || "(비어있음)",
-            characters: node.characters,
-            fontSize: Math.round(Number(fontSz) * 10) / 10,
-            fontWeight: fontWeight,
-            fillColor: fillHex,
-            visible: isNodeVisible
-          };
-        }
-        
-        const isImage = (node.type === "IMAGE") || (node.fills && Array.isArray(node.fills) && node.fills.some(f => f.type === "IMAGE"));
-        if (isImage) {
-          let thumbBase64 = null;
-          try {
-            const bytes = await node.exportAsync({ format: 'PNG', constraint: { type: 'WIDTH', value: 70 } });
-            thumbBase64 = figma.base64Encode(bytes);
-          } catch(e) {}
-          return {
-            id: node.id,
-            type: "IMAGE",
-            name: node.name,
-            semanticLabel: `🖼️ [이미지 변경] ` + node.name,
-            thumbnail: thumbBase64 ? 'data:image/png;base64,' + thumbBase64 : null,
-            visible: isNodeVisible
-          };
-        }
-
-        if ("children" in node) {
-          const isAutoLayout = node.layoutMode && node.layoutMode !== "NONE";
-          const childrenNodes = [];
-          let hasSuspiciousFrame = false;
-
-          for (const child of node.children) {
-            if (child.type === "FRAME" && (!child.layoutMode || child.layoutMode === "NONE")) {
-              hasSuspiciousFrame = true;
-            }
-            const childResult = await extractTree(child);
-            if (childResult) {
-               if (Array.isArray(childResult)) childrenNodes.push(...childResult);
-               else childrenNodes.push(childResult);
-            }
-          }
-          
-          if (childrenNodes.length === 0 && !isAutoLayout && node !== targetFrame) return null;
-
-          if (isAutoLayout || node === targetFrame) {
-             let groupName = "🏷️ 그룹";
-             const allTexts = [];
-             let hasMedia = false;
-             function gatherTexts(item) {
-                if (item.type === "TEXT") allTexts.push(item.characters);
-                if (item.type === "IMAGE") hasMedia = true;
-                if (item.children) item.children.forEach(gatherTexts);
-             }
-             childrenNodes.forEach(gatherTexts);
-             
-             const textCombined = allTexts.join(" ");
-             
-             let longestText = "";
-             allTexts.forEach(t => { if (t.length > longestText.length) longestText = t; });
-             let longestPrefix = longestText.length > 0 ? longestText.substring(0, 7) : "내용없음";
-             let firstText = allTexts.length > 0 ? allTexts[0] : "내용없음";
-             let firstPrefix = firstText.substring(0, 7);
-
-             if (textCombined.includes("만") || textCombined.includes("원")) {
-               groupName = `🏷️ [${longestPrefix}...] 가격 세트`;
-             } else if (textCombined.includes("회") || textCombined.includes("샷") || textCombined.includes("cc") || textCombined.includes("명") || textCombined.includes("개")) {
-               groupName = `🏷️ [${firstText}] 횟수/옵션`;
-             } else {
-               groupName = `🏷️ [${firstPrefix}...] 그룹`;
-             }
-             
-             let finalNodeName = node.name;
-             if (allTexts.length === 0 && !hasMedia) {
-                finalNodeName += " ⚠️ 텍스트 없음 (정리 필요)";
-             }
-
-             return {
-               id: node.id,
-               type: "GROUP",
-               name: finalNodeName,
-               autoName: groupName,
-               layoutMode: node.layoutMode || "NONE",
-               children: childrenNodes,
-               visible: isNodeVisible,
-               hasWarning: hasSuspiciousFrame
-             };
-          } else {
-             return childrenNodes;
-          }
-        }
-        return null;
+    if (msg.type === 'soft-delete-group') {
+      const targetNode = figma.getNodeById(msg.id);
+      if (targetNode) {
+        targetNode.visible = false;
+        figma.notify(`👁️ 숨김 처리되었습니다.`);
+        figma.ui.postMessage({ type: 'init-fields', groups: await getGroupedFields() });
       }
-      
-      const tree = await extractTree(targetFrame);
-      return tree ? (Array.isArray(tree) ? tree : [tree]) : [];
     }
 
-    figma.showUI(__html__, { width: 380, height: 680, themeColors: true });
-    figma.ui.postMessage({ type: 'init-fields', groups: await getGroupedFields() });
-
-    figma.on("selectionchange", () => {
-      const selectionIds = figma.currentPage.selection.map(n => n.id);
-      figma.ui.postMessage({ type: 'selection-changed', ids: selectionIds });
-    });
-
-    figma.ui.onmessage = async (msg) => {
-      
-      if (msg.type === 'focus-node') {
-        const node = figma.getNodeById(msg.id);
-        if (node && node.visible) {
-          figma.currentPage.selection = [node];
-          figma.viewport.scrollAndZoomIntoView([node]);
-          highlightNode(node);
-        }
+    if (msg.type === 'restore-group') {
+      const targetNode = figma.getNodeById(msg.id);
+      if (targetNode) {
+        targetNode.visible = true;
+        figma.notify(`🚀 성공적으로 복구되었습니다.`);
+        figma.ui.postMessage({ type: 'init-fields', groups: await getGroupedFields() });
       }
+    }
 
-      if (msg.type === 'clone-group') {
-        const targetNode = figma.getNodeById(msg.id);
-        if (targetNode && targetNode.type === "FRAME" && targetNode.parent) {
-          try {
-            const parent = targetNode.parent;
-            
-            // 💡 세로로 나열되도록 속성 강제 변환 병합
-            if (parent.layoutMode === "HORIZONTAL") {
-               parent.layoutMode = "VERTICAL";
-            }
-            
-            const clone = targetNode.clone();
-            const index = parent.children.indexOf(targetNode);
-            parent.insertChild(index + 1, clone);
-            clone.visible = true; 
-            
-            // 찌그러짐 방지를 위해 재귀적으로 상단 컨테이너들의 Hug Properties 강제복원
-            applyRecursiveLayoutGuard(parent);
-
-            figma.notify(`➕ 항목이 성공적으로 복제/삽입 되었습니다.`);
-            figma.ui.postMessage({ type: 'init-fields', groups: await getGroupedFields() });
-            
-            figma.currentPage.selection = [clone];
-            figma.viewport.scrollAndZoomIntoView([clone]);
-          } catch(e) {
-            figma.notify("오류가 발생했습니다 (인스턴스 등 제한된 템플릿에서는 복제 불가).", {error:true});
-          }
-        }
+    if (msg.type === 'hard-delete-group') {
+      const targetNode = figma.getNodeById(msg.id);
+      if (targetNode) {
+        targetNode.remove();
+        figma.notify(`🗑️ 영구 삭제되었습니다.`);
+        figma.ui.postMessage({ type: 'init-fields', groups: await getGroupedFields() });
       }
+    }
 
-      if (msg.type === 'soft-delete-group') {
-        const targetNode = figma.getNodeById(msg.id);
-        if (targetNode && targetNode.type === "FRAME") {
-           targetNode.visible = false;
-           applyRecursiveLayoutGuard(targetNode.parent);
-           figma.notify(`👁️ 항목이 삭제(숨김) 처리되어 휴지통으로 이동했습니다.`);
-           figma.ui.postMessage({ type: 'init-fields', groups: await getGroupedFields() });
-        }
-      }
-
-      if (msg.type === 'restore-group') {
-        const targetNode = figma.getNodeById(msg.id);
-        if (targetNode && targetNode.type === "FRAME") {
-           targetNode.visible = true;
-           applyRecursiveLayoutGuard(targetNode.parent);
-           figma.notify(`🚀 항목이 성공적으로 복구되었습니다.`);
-           figma.ui.postMessage({ type: 'init-fields', groups: await getGroupedFields() });
-           figma.currentPage.selection = [targetNode];
-           figma.viewport.scrollAndZoomIntoView([targetNode]);
-        }
-      }
-
-      if (msg.type === 'hard-delete-group') {
-        const targetNode = figma.getNodeById(msg.id);
-        if (targetNode && targetNode.type === "FRAME") {
-          try {
-            const tempParent = targetNode.parent;
-            targetNode.remove();
-            applyRecursiveLayoutGuard(tempParent);
-            figma.notify(`🗑️ 해당 원본이 완전히 파기(영구 삭제)되었습니다.`);
-            figma.ui.postMessage({ type: 'init-fields', groups: await getGroupedFields() });
-          } catch(e) {
-            figma.notify("메인 컴포넌트나 읽기 전용 구조에서는 파기할 수 없습니다.", {error:true});
-          }
-        }
-      }
-
-      if (msg.type === 'update-font-size') {
-        const node = figma.getNodeById(msg.id);
+    if (msg.type === 'update-texts') {
+      let successCount = 0;
+      for (const update of msg.updates) {
+        const node = figma.getNodeById(update.id);
         if (node && node.type === "TEXT") {
           try {
-            if (node.hasMissingFont) {
-               figma.notify("폰트 누락 제약", {error: true});
-            } else {
-               const len = node.characters.length;
-               if (len > 0) {
-                 const fontsToLoad = node.getRangeAllFontNames(0, len);
-                 for (const f of fontsToLoad) { await figma.loadFontAsync(f); }
-                 node.setRangeFontSize(0, len, msg.size);
-               } else {
-                 node.fontSize = msg.size;
-               }
-               applyLayoutGuard(node);
-               highlightNode(node);
-            }
-          } catch(e) {}
-        }
-      }
-      
-      if (msg.type === 'update-font-style') {
-        const node = figma.getNodeById(msg.id);
-        if (node && node.type === "TEXT") {
-          try {
-            const font = node.fontName === figma.mixed ? node.getRangeFontName(0, 1) : node.fontName;
-            if (font && !node.hasMissingFont) {
-               const newFont = { family: font.family, style: msg.weight };
-               await figma.loadFontAsync(newFont);
-               const len = node.characters.length;
-               if (len > 0) node.setRangeFontName(0, len, newFont);
-               else node.fontName = newFont;
-               applyLayoutGuard(node);
-               highlightNode(node);
-            }
-          } catch(e) {
-             figma.notify("해당 서체에서는 지원하지 않는 굵기입니다.", {error: true});
-          }
-        }
-      }
-
-      if (msg.type === 'update-color') {
-        const node = figma.getNodeById(msg.id);
-        if (node && node.type === "TEXT") {
-          try {
-            const hex = msg.color;
-            const r = parseInt(hex.substr(1, 2), 16) / 255;
-            const g = parseInt(hex.substr(3, 2), 16) / 255;
-            const b = parseInt(hex.substr(5, 2), 16) / 255;
-            const len = node.characters.length;
-            if (len > 0) node.setRangeFills(0, len, [{type: 'SOLID', color: {r, g, b}}]);
-            else node.fills = [{type: 'SOLID', color: {r, g, b}}];
-            highlightNode(node);
-          } catch(e) {}
-        }
-      }
-
-      if (msg.type === 'update-image') {
-        const node = figma.getNodeById(msg.id);
-        if (node && 'fills' in node) {
-          try {
-            const newImage = figma.createImage(msg.bytes);
-            const newFills = [...node.fills];
-            let replaced = false;
-            for (let i = 0; i < newFills.length; i++) {
-               if (newFills[i].type === "IMAGE") {
-                 newFills[i] = { type: "IMAGE", scaleMode: "FILL", imageHash: newImage.hash };
-                 replaced = true; break;
-               }
-            }
-            if (!replaced) newFills.push({ type: "IMAGE", scaleMode: "FILL", imageHash: newImage.hash });
-            node.fills = newFills;
-            highlightNode(node);
+            let changed = false;
             
-            figma.ui.postMessage({ type: 'init-fields', groups: await getGroupedFields() });
-          } catch(e) {}
-        }
-      }
-
-      if (msg.type === 'update-texts') {
-        let successCount = 0;
-        for (const update of msg.updates) {
-          const node = figma.getNodeById(update.id);
-          if (node && node.type === "TEXT" && node.characters !== update.characters) {
-            try {
-              if (node.hasMissingFont) continue; 
-              
-              const len = node.characters.length;
-              if (len > 0) {
-                 const styledSegments = node.getStyledTextSegments(['fontName', 'fontSize', 'fontWeight', 'fills', 'letterSpacing', 'lineHeight']);
-                 const fontsToLoad = node.getRangeAllFontNames(0, len);
-                 for (const f of fontsToLoad) { await figma.loadFontAsync(f); }
-                 
-                 node.characters = update.characters; 
-                 
-                 const newLen = update.characters.length;
-                 let currPos = 0;
-                 for (const seg of styledSegments) {
-                   if (currPos >= newLen) break;
-                   const segLen = seg.end - seg.start;
-                   const newEnd = Math.min(newLen, currPos + segLen);
-                   
-                   if (seg.fontName) { await figma.loadFontAsync(seg.fontName); node.setRangeFontName(currPos, newEnd, seg.fontName); }
-                   if (seg.fills) node.setRangeFills(currPos, newEnd, seg.fills);
-                   if (seg.fontSize) node.setRangeFontSize(currPos, newEnd, seg.fontSize);
-                   if (seg.letterSpacing) node.setRangeLetterSpacing(currPos, newEnd, seg.letterSpacing);
-                   if (seg.lineHeight) node.setRangeLineHeight(currPos, newEnd, seg.lineHeight);
-                   
-                   currPos = newEnd;
+            if (update.characters !== undefined && node.characters !== update.characters) {
+               if (!node.hasMissingFont) {
+                 const len = node.characters.length;
+                 if (len > 0) {
+                   const fontsToLoad = node.getRangeAllFontNames(0, len);
+                   for (const f of fontsToLoad) await figma.loadFontAsync(f);
                  }
-              } else {
                  node.characters = update.characters;
-              }
-              
-              applyLayoutGuard(node);
-              highlightNode(node);
-              successCount++;
-            } catch(e) {}
-          }
+                 changed = true;
+               }
+            }
+            
+            if (update.fillHex && update.fillHex !== "MIXED") {
+               const hex = update.fillHex;
+               if (/^#[0-9A-F]{6}$/i.test(hex)) {
+                  const r = parseInt(hex.substr(1, 2), 16) / 255;
+                  const g = parseInt(hex.substr(3, 2), 16) / 255;
+                  const b = parseInt(hex.substr(5, 2), 16) / 255;
+                  
+                  const len = node.characters.length;
+                  if (len > 0) {
+                     node.setRangeFills(0, len, [{type: 'SOLID', color: {r, g, b}}]);
+                  } else {
+                     node.fills = [{type: 'SOLID', color: {r, g, b}}];
+                  }
+                  changed = true;
+               }
+            }
+            
+            if (changed) successCount++;
+          } catch (e) { }
         }
-        figma.notify(`✨ 텍스트 ${successCount}곳이 퍼펙트 매칭 완료되었습니다!`);
       }
-      
-      if (msg.type === 'close') {
-        figma.closePlugin();
-      }
-    };
+      figma.notify(`✨ ${successCount}건 업데이트 완료!`);
+    }
+
+    if (msg.type === 'close') figma.closePlugin();
+  };
 }
 
 main();
