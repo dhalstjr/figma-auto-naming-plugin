@@ -97,8 +97,7 @@ function extractNodeToJSON(node) {
 
 function applyLayoutRules(node) {
   if (node.type !== 'frame') return node;
-  return {
-    ...node,
+  return Object.assign({}, node, {
     layout: node.layout || 'vertical',
     layoutRules: {
       grow: (node.layoutRules && node.layoutRules.grow) || 0,
@@ -106,18 +105,16 @@ function applyLayoutRules(node) {
       primaryAxisSizing: (node.style && node.style.width === 'fill') ? 'fill' : 'hug',
       counterAxisSizing: (node.style && node.style.height === 'fill') ? 'fill' : 'hug'
     }
-  };
+  });
 }
 
 function flattenDepth(node) {
-  // 의미 없는 중첩 프레임(부모와 자식의 레이아웃이 같고 자식이 하나뿐인 경우) 제거
   if (node.type === 'frame' && node.children && node.children.length === 1) {
     const child = node.children[0];
     if (child.type === 'frame' && child.layout === node.layout) {
-      return flattenDepth({
-        ...child,
-        id: node.id // 기존 상위 프레임의 ID를 보존하여 추적 유지
-      });
+      return flattenDepth(Object.assign({}, child, {
+        id: node.id
+      }));
     }
   }
   return node;
@@ -134,14 +131,12 @@ function applySpacingTokens(node) {
     if (val <= 24) return 'token.spacing.lg';
     return 'token.spacing.xl';
   };
-  return {
-    ...node,
-    style: {
-      ...node.style,
+  return Object.assign({}, node, {
+    style: Object.assign({}, node.style, {
       spacing: tokenize(node.style.spacing),
       padding: tokenize(node.style.padding)
-    }
-  };
+    })
+  });
 }
 
 function normalizeSize(node) {
@@ -151,58 +146,51 @@ function normalizeSize(node) {
     if (typeof sizeValue === 'number' || !isNaN(Number(sizeValue))) {
       return { type: 'fixed', value: Number(sizeValue) };
     }
-    return 'hug'; // 값이 불분명할 경우 기본 fallback
+    return 'hug';
   };
-  return {
-    ...node,
-    style: {
-      ...node.style,
+  return Object.assign({}, node, {
+    style: Object.assign({}, node.style, {
       width: formatSize(node.style.width),
       height: formatSize(node.style.height)
-    }
-  };
+    })
+  });
 }
 
 function assignBaseRole(node) {
   let role = (node.role && node.role !== 'default') ? node.role : 'container';
   if (node.type === 'text') {
-    role = 'text'; // 임시 텍스트 롤
+    role = 'text';
     const content = node.content || '';
     if (/^[0-9,]+$/.test(content.trim())) role = 'price';
     if (['만', '원', '회', '개', '%'].includes(content.trim())) role = 'unit';
   } else if (node.type === 'image') {
     role = 'thumbnail';
   }
-  return { ...node, role };
+  return Object.assign({}, node, { role: role });
 }
 
 function normalizeTree(rawNode) {
   if (!rawNode) return null;
 
-  // 1. 노드 자체 속성 정규화 (구조 보정)
   let node = normalizeSize(rawNode);
   node = applySpacingTokens(node);
   node = applyLayoutRules(node);
   node = assignBaseRole(node);
 
-  // 2. 자식 노드 재귀 순회
   if (node.children && Array.isArray(node.children)) {
     node.children = node.children
       .map(child => normalizeTree(child))
       .filter(Boolean);
   }
 
-  // 3. 트리 뎁스 최적화 (Bottom-Up 적용)
   node = flattenDepth(node);
 
   return node;
 }
 
 async function enhanceRolesWithAI(node) {
-  // 향후 외부 LLM API와 연동될 의미 보완 계층 (AI Layer)
-  // 현재는 구조를 해치지 않고 그대로 반환하는 파이프라인만 구축해둠
   const applyAIRoles = (n) => {
-    const updatedNode = { ...n };
+    const updatedNode = Object.assign({}, n);
     if (n.children) {
       updatedNode.children = n.children.map(applyAIRoles);
     }
@@ -211,7 +199,6 @@ async function enhanceRolesWithAI(node) {
   return applyAIRoles(node);
 }
 
-// 메인 프로세서: Raw -> Normalize -> AI Enhance -> 최종 반환
 async function processFigmaJSON(rawJSON) {
   const normalized = normalizeTree(rawJSON);
   const enhanced = await enhanceRolesWithAI(normalized);
@@ -243,7 +230,7 @@ function createFrame(node) {
 
 async function createText(node) {
   const textNode = figma.createText();
-  
+
   const family = (node.fontName && node.fontName.family) ? String(node.fontName.family) : "Inter";
   const style = (node.fontName && node.fontName.style) ? String(node.fontName.style) : "Regular";
 
@@ -387,6 +374,9 @@ async function renderFromSSOT(json) {
     const renderedNode = await renderNode(json, null);
     if (renderedNode && renderedNode.type === "FRAME") {
       figma.currentPage.appendChild(renderedNode);
+      // 생성된 노드로 화면 이동
+      figma.currentPage.selection = [renderedNode];
+      figma.viewport.scrollAndZoomIntoView([renderedNode]);
       return renderedNode;
     }
     return null;
@@ -396,6 +386,85 @@ async function renderFromSSOT(json) {
     }
     return null;
   }
+}
+
+
+// --- [Phase 4: AI Layer - Templateization & Data Binding Engine] ---
+
+const TEMPLATE_REGISTRY = {
+  "product_card": {
+    "type": "frame",
+    "layout": { "mode": "VERTICAL", "padding": "token.spacing.md", "spacing": "token.spacing.sm" },
+    "style": { "width": "hug", "height": "hug" },
+    "children": [
+      { "type": "image", "content": "{{imageUrl}}", "style": { "width": { "type": "fixed", "value": 200 }, "height": { "type": "fixed", "value": 200 } } },
+      { "type": "text", "content": "{{title}}", "style": { "width": "fill", "height": "hug" } },
+      { "type": "text", "content": "{{price}}원", "style": { "width": "fill", "height": "hug" } }
+    ]
+  },
+  "promotion_banner": {
+    "type": "frame",
+    "layout": { "mode": "HORIZONTAL", "padding": "token.spacing.lg", "spacing": "token.spacing.md" },
+    "style": { "width": "fill", "height": { "type": "fixed", "value": 120 } },
+    "children": [
+      {
+        "type": "frame", "layout": { "mode": "VERTICAL", "padding": "token.spacing.none", "spacing": "token.spacing.xs" }, "style": { "width": "fill", "height": "hug" },
+        "children": [
+          { "type": "text", "content": "{{badge}}", "style": { "width": "hug", "height": "hug" } },
+          { "type": "text", "content": "{{headline}}", "style": { "width": "fill", "height": "hug" } }
+        ]
+      },
+      { "type": "text", "content": "{{cta_text}}", "style": { "width": "hug", "height": "hug" } }
+    ]
+  },
+  "list_ui": {
+    "type": "frame",
+    "layout": { "mode": "HORIZONTAL", "padding": "token.spacing.md", "spacing": "token.spacing.md" },
+    "style": { "width": "fill", "height": "hug" },
+    "children": [
+      { "type": "text", "content": "{{index}}.", "style": { "width": { "type": "fixed", "value": 24 }, "height": "hug" } },
+      { "type": "text", "content": "{{item_name}}", "style": { "width": "fill", "height": "hug" } },
+      { "type": "text", "content": "{{status}}", "style": { "width": "hug", "height": "hug" } }
+    ]
+  }
+};
+
+function selectTemplateByRule(inputKeyword) {
+  const keyword = String(inputKeyword).trim().toLowerCase();
+  if (keyword.includes("상품") || keyword.includes("product")) return "product_card";
+  if (keyword.includes("배너") || keyword.includes("banner")) return "promotion_banner";
+  if (keyword.includes("리스트") || keyword.includes("list") || keyword.includes("목록")) return "list_ui";
+  return "product_card"; // Default Fallback
+}
+
+function bindDataToTemplate(templateObj, data) {
+  const result = JSON.parse(JSON.stringify(templateObj));
+
+  function traverseAndBind(obj) {
+    if (typeof obj === "string") {
+      return obj.replace(/\{\{([^}]+)\}\}/g, (match, key) => {
+        const dataValue = data[key.trim()];
+        return (dataValue !== undefined && dataValue !== null) ? String(dataValue) : "";
+      });
+    } else if (Array.isArray(obj)) {
+      return obj.map(item => traverseAndBind(item));
+    } else if (typeof obj === "object" && obj !== null) {
+      const boundObj = {};
+      for (const k in obj) {
+        boundObj[k] = traverseAndBind(obj[k]);
+      }
+      return boundObj;
+    }
+    return obj;
+  }
+
+  return traverseAndBind(result);
+}
+
+function generateSSOT(keyword, extractedData) {
+  const templateId = selectTemplateByRule(keyword);
+  const template = TEMPLATE_REGISTRY[templateId];
+  return bindDataToTemplate(template, extractedData);
 }
 
 
@@ -421,7 +490,7 @@ async function main() {
 async function openUI(targetFrame) {
   function highlightNode(node) {
     try {
-      const oldStrokes = [...node.strokes];
+      const oldStrokes = node.strokes ? node.strokes.slice() : [];
       const oldWeight = node.strokeWeight;
       node.strokes = [{ type: 'SOLID', color: { r: 0.09, g: 0.62, b: 0.98 } }];
       node.strokeWeight = Math.max(3, oldWeight * 2);
@@ -432,7 +501,7 @@ async function openUI(targetFrame) {
   }
 
   async function getGroupedFields() {
-    const result = [];
+    let result = [];
     const processedNodes = new Set();
     const rowCardsMap = new Map();
     const standaloneFields = [];
@@ -516,7 +585,7 @@ async function openUI(targetFrame) {
       });
     }
 
-    result.push(...standaloneFields);
+    result = result.concat(standaloneFields);
 
     return result;
   }
@@ -623,19 +692,19 @@ async function openUI(targetFrame) {
       figma.notify(`✨ ${successCount}건 업데이트 완료!`);
     }
 
-    // ⭐️ 변경된 부분: EXTRACT_JSON 이벤트에서 Normalize 파이프라인 호출
+    // ⭐️ 렌더링 엔진 실행
     if (msg.type === 'EXTRACT_JSON') {
       const selection = figma.currentPage.selection;
       if (selection.length > 0) {
-        // 1. Raw 추출
         const rawJSON = extractNodeToJSON(selection[0]);
-
-        // 2. Normalize & AI 정제 파이프라인 통과
         const ssotJSON = await processFigmaJSON(rawJSON);
 
         console.log("Extracted & Normalized SSOT JSON:", JSON.stringify(ssotJSON, null, 2));
         figma.ui.postMessage({ type: 'extracted-json', data: ssotJSON });
-        figma.notify("SSOT JSON 정제 완료!", { timeout: 2000 });
+
+        figma.notify("SSOT JSON 정제 완료! 렌더링을 시작합니다...", { timeout: 2000 });
+        await renderFromSSOT(ssotJSON);
+
       } else {
         figma.notify("추출할 프레임을 선택해주세요.", { error: true });
       }
