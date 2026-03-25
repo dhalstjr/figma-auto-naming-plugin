@@ -1,4 +1,4 @@
-// --- [Phase 1: SSOT JSON 추출 유틸리티 함수] ---
+// --- [Phase 1: SSOT JSON 추출 유틸리티 함수 (Raw Data)] ---
 function reverseTokenizeSpacing(value) {
   if (typeof value !== 'number' || value === 0) return "token.spacing.none";
   if (value <= 4) return "token.spacing.xs";
@@ -53,14 +53,14 @@ function extractNodeToJSON(node) {
     if (node.children && node.children.length > 0) {
       json.children = node.children.map(child => extractNodeToJSON(child));
     }
-    
+
     if (node.layoutMode === "HORIZONTAL" || node.layoutMode === "VERTICAL") {
-       json.style = {
-         width: getSizingMode(node, "HORIZONTAL"),
-         height: getSizingMode(node, "VERTICAL"),
-         spacing: reverseTokenizeSpacing(node.itemSpacing),
-         padding: reverseTokenizeSpacing(Math.max(node.paddingLeft || 0, node.paddingTop || 0))
-       };
+      json.style = {
+        width: getSizingMode(node, "HORIZONTAL"),
+        height: getSizingMode(node, "VERTICAL"),
+        spacing: reverseTokenizeSpacing(node.itemSpacing),
+        padding: reverseTokenizeSpacing(Math.max(node.paddingLeft || 0, node.paddingTop || 0))
+      };
     }
   }
 
@@ -69,7 +69,7 @@ function extractNodeToJSON(node) {
     if (nodeType === "text") {
       json.content = node.characters || "";
     }
-    
+
     json.style = json.style || {};
     json.style.width = getSizingMode(node, "HORIZONTAL");
     json.style.height = getSizingMode(node, "VERTICAL");
@@ -77,23 +77,329 @@ function extractNodeToJSON(node) {
     let alignMode = "start";
     if (node.layoutAlign === "CENTER") alignMode = "center";
     if (node.layoutAlign === "MAX") alignMode = "end";
-    
+
     json.layoutRules = {
       grow: node.layoutGrow || 0,
       align: alignMode
     };
-    
+
     if (nodeType === "image") {
       const w = Math.round(node.width || 1);
       const h = Math.round(node.height || 1);
-      // 간단한 비율 추정 로직
-      json.layoutRules.ratio = (w === h) ? "1:1" : "16:9"; 
+      json.layoutRules.ratio = (w === h) ? "1:1" : "16:9";
     }
   }
 
   return json;
 }
-// -----------------------------------------------------------
+
+// --- [Phase 2: Normalize Engine (데이터 정제 및 의미 보완)] ---
+
+function applyLayoutRules(node) {
+  if (node.type !== 'frame') return node;
+  return {
+    ...node,
+    layout: node.layout || 'vertical',
+    layoutRules: {
+      grow: (node.layoutRules && node.layoutRules.grow) || 0,
+      align: (node.layoutRules && node.layoutRules.align) || 'start',
+      primaryAxisSizing: (node.style && node.style.width === 'fill') ? 'fill' : 'hug',
+      counterAxisSizing: (node.style && node.style.height === 'fill') ? 'fill' : 'hug'
+    }
+  };
+}
+
+function flattenDepth(node) {
+  // 의미 없는 중첩 프레임(부모와 자식의 레이아웃이 같고 자식이 하나뿐인 경우) 제거
+  if (node.type === 'frame' && node.children && node.children.length === 1) {
+    const child = node.children[0];
+    if (child.type === 'frame' && child.layout === node.layout) {
+      return flattenDepth({
+        ...child,
+        id: node.id // 기존 상위 프레임의 ID를 보존하여 추적 유지
+      });
+    }
+  }
+  return node;
+}
+
+function applySpacingTokens(node) {
+  if (!node.style) return node;
+  const tokenize = (val) => {
+    if (typeof val === 'string' && val.includes('token')) return val;
+    if (!val || val === 0) return 'token.spacing.none';
+    if (val <= 4) return 'token.spacing.xs';
+    if (val <= 8) return 'token.spacing.sm';
+    if (val <= 16) return 'token.spacing.md';
+    if (val <= 24) return 'token.spacing.lg';
+    return 'token.spacing.xl';
+  };
+  return {
+    ...node,
+    style: {
+      ...node.style,
+      spacing: tokenize(node.style.spacing),
+      padding: tokenize(node.style.padding)
+    }
+  };
+}
+
+function normalizeSize(node) {
+  if (!node.style) return node;
+  const formatSize = (sizeValue) => {
+    if (sizeValue === 'fill' || sizeValue === 'hug') return sizeValue;
+    if (typeof sizeValue === 'number' || !isNaN(Number(sizeValue))) {
+      return { type: 'fixed', value: Number(sizeValue) };
+    }
+    return 'hug'; // 값이 불분명할 경우 기본 fallback
+  };
+  return {
+    ...node,
+    style: {
+      ...node.style,
+      width: formatSize(node.style.width),
+      height: formatSize(node.style.height)
+    }
+  };
+}
+
+function assignBaseRole(node) {
+  let role = (node.role && node.role !== 'default') ? node.role : 'container';
+  if (node.type === 'text') {
+    role = 'text'; // 임시 텍스트 롤
+    const content = node.content || '';
+    if (/^[0-9,]+$/.test(content.trim())) role = 'price';
+    if (['만', '원', '회', '개', '%'].includes(content.trim())) role = 'unit';
+  } else if (node.type === 'image') {
+    role = 'thumbnail';
+  }
+  return { ...node, role };
+}
+
+function normalizeTree(rawNode) {
+  if (!rawNode) return null;
+
+  // 1. 노드 자체 속성 정규화 (구조 보정)
+  let node = normalizeSize(rawNode);
+  node = applySpacingTokens(node);
+  node = applyLayoutRules(node);
+  node = assignBaseRole(node);
+
+  // 2. 자식 노드 재귀 순회
+  if (node.children && Array.isArray(node.children)) {
+    node.children = node.children
+      .map(child => normalizeTree(child))
+      .filter(Boolean);
+  }
+
+  // 3. 트리 뎁스 최적화 (Bottom-Up 적용)
+  node = flattenDepth(node);
+
+  return node;
+}
+
+async function enhanceRolesWithAI(node) {
+  // 향후 외부 LLM API와 연동될 의미 보완 계층 (AI Layer)
+  // 현재는 구조를 해치지 않고 그대로 반환하는 파이프라인만 구축해둠
+  const applyAIRoles = (n) => {
+    const updatedNode = { ...n };
+    if (n.children) {
+      updatedNode.children = n.children.map(applyAIRoles);
+    }
+    return updatedNode;
+  };
+  return applyAIRoles(node);
+}
+
+// 메인 프로세서: Raw -> Normalize -> AI Enhance -> 최종 반환
+async function processFigmaJSON(rawJSON) {
+  const normalized = normalizeTree(rawJSON);
+  const enhanced = await enhanceRolesWithAI(normalized);
+  return enhanced;
+}
+
+
+// --- [Phase 3: Render Engine (JSON to Auto Layout)] ---
+
+const TOKEN_DICTIONARY = {
+  "token.spacing.xs": 4,
+  "token.spacing.sm": 8,
+  "token.spacing.md": 16,
+  "token.spacing.lg": 24,
+  "token.spacing.xl": 32,
+  "token.spacing.none": 0
+};
+
+function resolveToken(value) {
+  if (typeof value === "string" && TOKEN_DICTIONARY[value] !== undefined) {
+    return TOKEN_DICTIONARY[value];
+  }
+  return typeof value === "number" ? value : 0;
+}
+
+function createFrame(node) {
+  return figma.createFrame();
+}
+
+async function createText(node) {
+  const textNode = figma.createText();
+  
+  const family = (node.fontName && node.fontName.family) ? String(node.fontName.family) : "Inter";
+  const style = (node.fontName && node.fontName.style) ? String(node.fontName.style) : "Regular";
+
+  await figma.loadFontAsync({ family, style });
+
+  if (node.fontName) {
+    textNode.fontName = { family, style };
+  }
+
+  if (node.characters !== undefined) {
+    textNode.characters = String(node.characters);
+  } else if (node.content !== undefined) {
+    textNode.characters = String(node.content);
+  }
+
+  if (node.fontSize !== undefined) {
+    textNode.fontSize = Number(node.fontSize);
+  }
+
+  if (node.color) {
+    textNode.fills = [{ type: 'SOLID', color: node.color }];
+  }
+
+  return textNode;
+}
+
+function createImage(node) {
+  const rect = figma.createRectangle();
+  rect.fills = [{ type: 'SOLID', color: { r: 0.8, g: 0.8, b: 0.8 } }];
+  return rect;
+}
+
+function applyLayout(node, figmaNode) {
+  if (node.layout && figmaNode.type === "FRAME") {
+    if (node.layout.mode) {
+      figmaNode.layoutMode = String(node.layout.mode).toUpperCase();
+    }
+    if (node.layout.spacing !== undefined) {
+      figmaNode.itemSpacing = resolveToken(node.layout.spacing);
+    }
+    if (node.layout.padding !== undefined) {
+      const p = node.layout.padding;
+      if (typeof p === "string" || typeof p === "number") {
+        const val = resolveToken(p);
+        figmaNode.paddingTop = val;
+        figmaNode.paddingRight = val;
+        figmaNode.paddingBottom = val;
+        figmaNode.paddingLeft = val;
+      } else if (typeof p === "object") {
+        if (p.top !== undefined) figmaNode.paddingTop = resolveToken(p.top);
+        if (p.bottom !== undefined) figmaNode.paddingBottom = resolveToken(p.bottom);
+        if (p.left !== undefined) figmaNode.paddingLeft = resolveToken(p.left);
+        if (p.right !== undefined) figmaNode.paddingRight = resolveToken(p.right);
+      }
+    }
+  }
+
+  if (node.layoutRules) {
+    const isParentAutoLayout = figmaNode.parent && "layoutMode" in figmaNode.parent && figmaNode.parent.layoutMode !== "NONE";
+    if (isParentAutoLayout && "layoutGrow" in figmaNode) {
+      if (node.layoutRules.grow !== undefined) {
+        figmaNode.layoutGrow = Number(node.layoutRules.grow);
+      }
+      if (node.layoutRules.align !== undefined && "layoutAlign" in figmaNode) {
+        figmaNode.layoutAlign = String(node.layoutRules.align).toUpperCase();
+      }
+    }
+  }
+}
+
+function applyStyle(node, figmaNode) {
+  if (!node.style) return;
+
+  const isParentAutoLayout = figmaNode.parent && "layoutMode" in figmaNode.parent && figmaNode.parent.layoutMode !== "NONE";
+  let hasFillOrHug = false;
+
+  if (node.style.width !== undefined) {
+    const w = String(node.style.width).toLowerCase();
+    if (w === "fill" || w === "hug") {
+      if (isParentAutoLayout && "layoutSizingHorizontal" in figmaNode) {
+        figmaNode.layoutSizingHorizontal = w.toUpperCase();
+      }
+      hasFillOrHug = true;
+    }
+  }
+
+  if (node.style.height !== undefined) {
+    const h = String(node.style.height).toLowerCase();
+    if (h === "fill" || h === "hug") {
+      if (isParentAutoLayout && "layoutSizingVertical" in figmaNode) {
+        figmaNode.layoutSizingVertical = h.toUpperCase();
+      }
+      hasFillOrHug = true;
+    }
+  }
+
+  if (!hasFillOrHug) {
+    const widthIsNum = typeof node.style.width === "number";
+    const heightIsNum = typeof node.style.height === "number";
+    if (widthIsNum || heightIsNum) {
+      if ("resize" in figmaNode) {
+        const targetW = widthIsNum ? Number(node.style.width) : (figmaNode.width || 1);
+        const targetH = heightIsNum ? Number(node.style.height) : (figmaNode.height || 1);
+        figmaNode.resize(targetW, targetH);
+      }
+    }
+  }
+}
+
+async function renderNode(node, parent) {
+  if (!node || !node.type) return null;
+  const t = String(node.type).toLowerCase();
+  let figmaNode = null;
+
+  if (t === "frame" || t === "container") {
+    figmaNode = createFrame(node);
+  } else if (t === "text") {
+    figmaNode = await createText(node);
+  } else if (t === "image") {
+    figmaNode = createImage(node);
+  }
+
+  if (!figmaNode) return null;
+
+  if (parent) {
+    parent.appendChild(figmaNode);
+  }
+
+  applyLayout(node, figmaNode);
+  applyStyle(node, figmaNode);
+
+  if ((t === "frame" || t === "container") && Array.isArray(node.children)) {
+    await Promise.all(node.children.map((child) => renderNode(child, figmaNode)));
+  }
+
+  return figmaNode;
+}
+
+async function renderFromSSOT(json) {
+  try {
+    const renderedNode = await renderNode(json, null);
+    if (renderedNode && renderedNode.type === "FRAME") {
+      figma.currentPage.appendChild(renderedNode);
+      return renderedNode;
+    }
+    return null;
+  } catch (error) {
+    if (figma && figma.notify) {
+      figma.notify("Error: " + error.message, { error: true });
+    }
+    return null;
+  }
+}
+
+
+// --- [UI 통신 및 플러그인 초기화 (Main Logic)] ---
 
 async function main() {
   try {
@@ -128,91 +434,90 @@ async function openUI(targetFrame) {
   async function getGroupedFields() {
     const result = [];
     const processedNodes = new Set();
-    const rowCardsMap = new Map(); // key: Layout_ frame ID
+    const rowCardsMap = new Map();
     const standaloneFields = [];
 
     const allNodes = targetFrame.findAll(n => n.type === "TEXT" || n.type === "IMAGE" || (n.fills && Array.isArray(n.fills) && n.fills.some(f => f.type === "IMAGE")));
 
     for (const node of allNodes) {
-       if (processedNodes.has(node.id)) continue;
-       processedNodes.add(node.id);
+      if (processedNodes.has(node.id)) continue;
+      processedNodes.add(node.id);
 
-       let parentRow = null;
-       let curr = node.parent;
-       while (curr && curr !== targetFrame && curr.type !== "PAGE") {
-          if (curr.type === "FRAME" && curr.layoutMode === "VERTICAL" && curr.name.startsWith("Layout_")) {
-             parentRow = curr;
-             break;
-          }
-          curr = curr.parent;
-       }
+      let parentRow = null;
+      let curr = node.parent;
+      while (curr && curr !== targetFrame && curr.type !== "PAGE") {
+        if (curr.type === "FRAME" && curr.layoutMode === "VERTICAL" && curr.name.startsWith("Layout_")) {
+          parentRow = curr;
+          break;
+        }
+        curr = curr.parent;
+      }
 
-       let isImage = node.type === "IMAGE" || (node.fills && Array.isArray(node.fills) && node.fills.some(f => f.type === "IMAGE"));
-       
-       let fieldData = null;
-       if (!isImage) { // Must be TEXT
-          let fSize = 12; let fWeight = "Regular"; let fColor = "#000000";
-          if (node.fontSize !== figma.mixed) fSize = node.fontSize;
-          if (node.fontName !== figma.mixed) fWeight = node.fontName.style;
-          if (node.fills !== figma.mixed && node.fills.length > 0 && node.fills[0].type === 'SOLID') {
-             const r = Math.round(node.fills[0].color.r * 255).toString(16).padStart(2, '0');
-             const g = Math.round(node.fills[0].color.g * 255).toString(16).padStart(2, '0');
-             const b = Math.round(node.fills[0].color.b * 255).toString(16).padStart(2, '0');
-             fColor = `#${r}${g}${b}`.toUpperCase();
-          } else { fColor = "mixed"; }
+      let isImage = node.type === "IMAGE" || (node.fills && Array.isArray(node.fills) && node.fills.some(f => f.type === "IMAGE"));
 
-          fieldData = {
-            id: node.id, type: "FIELD", fieldType: "TEXT",
-            characters: node.characters, label: node.characters.substring(0, 10).replace(/\n/g, ' ') || "텍스트",
-            fontSize: fSize, fontWeight: fWeight, fillColor: fColor,
-            visible: node.visible
-          };
-       } else {
-          fieldData = {
-            id: node.id, type: "FIELD", fieldType: "IMAGE",
-            label: "이미지 변경", visible: node.visible
-          };
-       }
+      let fieldData = null;
+      if (!isImage) {
+        let fSize = 12; let fWeight = "Regular"; let fColor = "#000000";
+        if (node.fontSize !== figma.mixed) fSize = node.fontSize;
+        if (node.fontName !== figma.mixed) fWeight = node.fontName.style;
+        if (node.fills !== figma.mixed && node.fills.length > 0 && node.fills[0].type === 'SOLID') {
+          const r = Math.round(node.fills[0].color.r * 255).toString(16).padStart(2, '0');
+          const g = Math.round(node.fills[0].color.g * 255).toString(16).padStart(2, '0');
+          const b = Math.round(node.fills[0].color.b * 255).toString(16).padStart(2, '0');
+          fColor = `#${r}${g}${b}`.toUpperCase();
+        } else { fColor = "mixed"; }
 
-       if (parentRow) {
-          if (!rowCardsMap.has(parentRow.id)) {
-             rowCardsMap.set(parentRow.id, { node: parentRow, fields: [] });
-          }
-          rowCardsMap.get(parentRow.id).fields.push(fieldData);
-       } else {
-          standaloneFields.push(fieldData);
-       }
+        fieldData = {
+          id: node.id, type: "FIELD", fieldType: "TEXT",
+          characters: node.characters, label: node.characters.substring(0, 10).replace(/\n/g, ' ') || "텍스트",
+          fontSize: fSize, fontWeight: fWeight, fillColor: fColor,
+          visible: node.visible
+        };
+      } else {
+        fieldData = {
+          id: node.id, type: "FIELD", fieldType: "IMAGE",
+          label: "이미지 변경", visible: node.visible
+        };
+      }
+
+      if (parentRow) {
+        if (!rowCardsMap.has(parentRow.id)) {
+          rowCardsMap.set(parentRow.id, { node: parentRow, fields: [] });
+        }
+        rowCardsMap.get(parentRow.id).fields.push(fieldData);
+      } else {
+        standaloneFields.push(fieldData);
+      }
     }
 
-    // Convert Map back to array format
     for (const [rowId, data] of rowCardsMap.entries()) {
-        const rowNode = data.node;
-        const fields = data.fields;
-        
-        let longestText = "";
-        let numberAttr = "";
-        fields.forEach(f => {
-          if (f.fieldType === "TEXT") {
-             if (f.characters.length > longestText.length) longestText = f.characters;
-             const lowerT = f.characters.toLowerCase();
-             if (/[0-9]/.test(lowerT) && (lowerT.includes('만') || lowerT.includes('원') || lowerT.includes('샷') || lowerT.includes('회') || lowerT.includes('%'))) {
-               if (!numberAttr || f.characters.length < numberAttr.length) numberAttr = f.characters;
-             }
+      const rowNode = data.node;
+      const fields = data.fields;
+
+      let longestText = "";
+      let numberAttr = "";
+      fields.forEach(f => {
+        if (f.fieldType === "TEXT") {
+          if (f.characters.length > longestText.length) longestText = f.characters;
+          const lowerT = f.characters.toLowerCase();
+          if (/[0-9]/.test(lowerT) && (lowerT.includes('만') || lowerT.includes('원') || lowerT.includes('샷') || lowerT.includes('회') || lowerT.includes('%'))) {
+            if (!numberAttr || f.characters.length < numberAttr.length) numberAttr = f.characters;
           }
-        });
+        }
+      });
 
-        let mainLabel = longestText.substring(0, 10).replace(/\n/g, ' ');
-        if (longestText.length > 10) mainLabel += "...";
-        const autoName = numberAttr ? `🏷️ [${mainLabel}] ${numberAttr.substring(0, 8).replace(/\n/g, '')}` : `🏷️ [${mainLabel}] 그룹`;
+      let mainLabel = longestText.substring(0, 10).replace(/\n/g, ' ');
+      if (longestText.length > 10) mainLabel += "...";
+      const autoName = numberAttr ? `🏷️ [${mainLabel}] ${numberAttr.substring(0, 8).replace(/\n/g, '')}` : `🏷️ [${mainLabel}] 그룹`;
 
-        result.push({
-          type: "ROW_CARD", id: rowNode.id, name: rowNode.name, autoName: autoName,
-          visible: rowNode.visible, fields: fields
-        });
+      result.push({
+        type: "ROW_CARD", id: rowNode.id, name: rowNode.name, autoName: autoName,
+        visible: rowNode.visible, fields: fields
+      });
     }
 
     result.push(...standaloneFields);
-    
+
     return result;
   }
 
@@ -281,36 +586,36 @@ async function openUI(targetFrame) {
         if (node && node.type === "TEXT") {
           try {
             let changed = false;
-            
+
             if (update.characters !== undefined && node.characters !== update.characters) {
-               if (!node.hasMissingFont) {
-                 const len = node.characters.length;
-                 if (len > 0) {
-                   const fontsToLoad = node.getRangeAllFontNames(0, len);
-                   for (const f of fontsToLoad) await figma.loadFontAsync(f);
-                 }
-                 node.characters = update.characters;
-                 changed = true;
-               }
+              if (!node.hasMissingFont) {
+                const len = node.characters.length;
+                if (len > 0) {
+                  const fontsToLoad = node.getRangeAllFontNames(0, len);
+                  for (const f of fontsToLoad) await figma.loadFontAsync(f);
+                }
+                node.characters = update.characters;
+                changed = true;
+              }
             }
-            
+
             if (update.fillHex && update.fillHex !== "MIXED") {
-               const hex = update.fillHex;
-               if (/^#[0-9A-F]{6}$/i.test(hex)) {
-                  const r = parseInt(hex.substr(1, 2), 16) / 255;
-                  const g = parseInt(hex.substr(3, 2), 16) / 255;
-                  const b = parseInt(hex.substr(5, 2), 16) / 255;
-                  
-                  const len = node.characters.length;
-                  if (len > 0) {
-                     node.setRangeFills(0, len, [{type: 'SOLID', color: {r, g, b}}]);
-                  } else {
-                     node.fills = [{type: 'SOLID', color: {r, g, b}}];
-                  }
-                  changed = true;
-               }
+              const hex = update.fillHex;
+              if (/^#[0-9A-F]{6}$/i.test(hex)) {
+                const r = parseInt(hex.substr(1, 2), 16) / 255;
+                const g = parseInt(hex.substr(3, 2), 16) / 255;
+                const b = parseInt(hex.substr(5, 2), 16) / 255;
+
+                const len = node.characters.length;
+                if (len > 0) {
+                  node.setRangeFills(0, len, [{ type: 'SOLID', color: { r, g, b } }]);
+                } else {
+                  node.fills = [{ type: 'SOLID', color: { r, g, b } }];
+                }
+                changed = true;
+              }
             }
-            
+
             if (changed) successCount++;
           } catch (e) { }
         }
@@ -318,13 +623,19 @@ async function openUI(targetFrame) {
       figma.notify(`✨ ${successCount}건 업데이트 완료!`);
     }
 
+    // ⭐️ 변경된 부분: EXTRACT_JSON 이벤트에서 Normalize 파이프라인 호출
     if (msg.type === 'EXTRACT_JSON') {
       const selection = figma.currentPage.selection;
       if (selection.length > 0) {
-        const extractedJSON = extractNodeToJSON(selection[0]);
-        console.log("Extracted SSOT JSON:", JSON.stringify(extractedJSON, null, 2));
-        figma.ui.postMessage({ type: 'extracted-json', data: extractedJSON });
-        figma.notify("SSOT JSON 파싱 완료!", { timeout: 2000 });
+        // 1. Raw 추출
+        const rawJSON = extractNodeToJSON(selection[0]);
+
+        // 2. Normalize & AI 정제 파이프라인 통과
+        const ssotJSON = await processFigmaJSON(rawJSON);
+
+        console.log("Extracted & Normalized SSOT JSON:", JSON.stringify(ssotJSON, null, 2));
+        figma.ui.postMessage({ type: 'extracted-json', data: ssotJSON });
+        figma.notify("SSOT JSON 정제 완료!", { timeout: 2000 });
       } else {
         figma.notify("추출할 프레임을 선택해주세요.", { error: true });
       }
