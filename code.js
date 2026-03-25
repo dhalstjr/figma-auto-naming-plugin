@@ -1,3 +1,100 @@
+// --- [Phase 1: SSOT JSON 추출 유틸리티 함수] ---
+function reverseTokenizeSpacing(value) {
+  if (typeof value !== 'number' || value === 0) return "token.spacing.none";
+  if (value <= 4) return "token.spacing.xs";
+  if (value <= 8) return "token.spacing.sm";
+  if (value <= 16) return "token.spacing.md";
+  if (value <= 24) return "token.spacing.lg";
+  if (value <= 32) return "token.spacing.xl";
+  return "token.spacing.xxl";
+}
+
+function getSizingMode(node, axis) {
+  if (axis === "HORIZONTAL") {
+    if (node.layoutSizingHorizontal === "FILL" || node.layoutGrow === 1) return "fill";
+    if (node.layoutSizingHorizontal === "HUG") return "hug";
+    return "fixed";
+  } else {
+    if (node.layoutSizingVertical === "FILL" || node.layoutAlign === "STRETCH") return "fill";
+    if (node.layoutSizingVertical === "HUG") return "hug";
+    return "fixed";
+  }
+}
+
+function determineRole(node) {
+  const name = (node.name || "").toLowerCase();
+  if (name.includes("thumbnail") || name.includes("thumb")) return "thumbnail";
+  if (name.includes("title")) return "title";
+  if (name.includes("desc") || name.includes("sub")) return "description";
+  if (name.includes("btn") || name.includes("button")) return "button";
+  if (name.includes("icon")) return "icon";
+  return "default";
+}
+
+function determineType(node) {
+  if (node.type === "TEXT") return "text";
+  const isImageFill = node.fills && Array.isArray(node.fills) && node.fills.some(f => f.type === "IMAGE");
+  if (node.type === "IMAGE" || isImageFill) return "image";
+  if (node.type === "FRAME" || node.type === "COMPONENT" || node.type === "INSTANCE") return "frame";
+  if (node.type === "GROUP") return "container";
+  return "container";
+}
+
+function extractNodeToJSON(node) {
+  const nodeType = determineType(node);
+  const json = {
+    id: node.id,
+    type: nodeType
+  };
+
+  if (nodeType === "frame" || nodeType === "container") {
+    json.layout = node.layoutMode === "HORIZONTAL" ? "horizontal" : (node.layoutMode === "VERTICAL" ? "vertical" : "none");
+    json.children = [];
+    if (node.children && node.children.length > 0) {
+      json.children = node.children.map(child => extractNodeToJSON(child));
+    }
+    
+    if (node.layoutMode === "HORIZONTAL" || node.layoutMode === "VERTICAL") {
+       json.style = {
+         width: getSizingMode(node, "HORIZONTAL"),
+         height: getSizingMode(node, "VERTICAL"),
+         spacing: reverseTokenizeSpacing(node.itemSpacing),
+         padding: reverseTokenizeSpacing(Math.max(node.paddingLeft || 0, node.paddingTop || 0))
+       };
+    }
+  }
+
+  if (nodeType === "image" || nodeType === "text" || nodeType === "container") {
+    json.role = determineRole(node);
+    if (nodeType === "text") {
+      json.content = node.characters || "";
+    }
+    
+    json.style = json.style || {};
+    json.style.width = getSizingMode(node, "HORIZONTAL");
+    json.style.height = getSizingMode(node, "VERTICAL");
+
+    let alignMode = "start";
+    if (node.layoutAlign === "CENTER") alignMode = "center";
+    if (node.layoutAlign === "MAX") alignMode = "end";
+    
+    json.layoutRules = {
+      grow: node.layoutGrow || 0,
+      align: alignMode
+    };
+    
+    if (nodeType === "image") {
+      const w = Math.round(node.width || 1);
+      const h = Math.round(node.height || 1);
+      // 간단한 비율 추정 로직
+      json.layoutRules.ratio = (w === h) ? "1:1" : "16:9"; 
+    }
+  }
+
+  return json;
+}
+// -----------------------------------------------------------
+
 async function main() {
   try {
     const selection = figma.currentPage.selection;
@@ -219,6 +316,18 @@ async function openUI(targetFrame) {
         }
       }
       figma.notify(`✨ ${successCount}건 업데이트 완료!`);
+    }
+
+    if (msg.type === 'EXTRACT_JSON') {
+      const selection = figma.currentPage.selection;
+      if (selection.length > 0) {
+        const extractedJSON = extractNodeToJSON(selection[0]);
+        console.log("Extracted SSOT JSON:", JSON.stringify(extractedJSON, null, 2));
+        figma.ui.postMessage({ type: 'extracted-json', data: extractedJSON });
+        figma.notify("SSOT JSON 파싱 완료!", { timeout: 2000 });
+      } else {
+        figma.notify("추출할 프레임을 선택해주세요.", { error: true });
+      }
     }
 
     if (msg.type === 'close') figma.closePlugin();
