@@ -359,6 +359,53 @@
       .snackbar-btn:hover {
          text-decoration: underline;
       }
+      /* [Phase 1] JSON 추출 섹션 스타일 */
+      .phase1-section {
+         padding: 16px;
+         background: #fbfbfb;
+         border-bottom: 2px solid #eaeaea;
+         display: flex;
+         flex-direction: column;
+         gap: 12px;
+         flex-shrink: 0;
+      }
+
+      .phase1-header {
+         display: flex;
+         justify-content: space-between;
+         align-items: center;
+         font-weight: 700;
+         font-size: 13px;
+         color: #222;
+      }
+
+      .phase1-actions {
+         display: flex;
+         gap: 6px;
+      }
+
+      .json-output-container {
+         background: #2b2b2b;
+         color: #a9b7c6;
+         padding: 12px;
+         border-radius: 8px;
+         font-size: 11px;
+         font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+         overflow-y: auto;
+         max-height: 200px;
+         margin: 0;
+         box-shadow: inset 0 2px 4px rgba(0,0,0,0.1);
+      }
+
+      .json-output-container::-webkit-scrollbar {
+         width: 8px;
+         height: 8px;
+      }
+
+      .json-output-container::-webkit-scrollbar-thumb {
+         background: #555;
+         border-radius: 4px;
+      }
    </style>
 </head>
 
@@ -367,6 +414,18 @@
       <span>📋 템플릿 마스터 에디터</span>
       <button id="btn-show-deleted" class="btn-action">휴지통 보기</button>
    </header>
+
+   <!-- [Phase 1] SSOT JSON 추출 섹션 -->
+   <div class="phase1-section">
+      <div class="phase1-header">
+         <span>⚙️ AI 디자인 자동화 시스템 - Phase 1</span>
+         <div class="phase1-actions">
+            <button id="extractBtn" class="btn-action btn-add">JSON 추출하기</button>
+            <button id="copyJsonBtn" class="btn-action">클립보드 복사</button>
+         </div>
+      </div>
+      <pre class="json-output-container"><code id="jsonOutput">추출할 프레임을 캔버스에서 선택한 후 'JSON 추출하기' 버튼을 눌러주세요.</code></pre>
+   </div>
 
    <div class="content" id="form-container">
       <div style="text-align:center; padding: 30px; color:#888; font-size:12px;">데이터를 스캔하는 중입니다...</div>
@@ -408,6 +467,12 @@
 
       window.onmessage = async (event) => {
          const msg = event.data.pluginMessage;
+         
+         // [Phase 1] JSON 추출 데이터 수신
+         if (msg.type === 'extracted-json') {
+            document.getElementById('jsonOutput').innerText = JSON.stringify(msg.data, null, 2);
+         }
+
          if (msg.type === 'init-fields') {
             fieldsGroups = msg.groups;
             renderFields();
@@ -438,6 +503,26 @@
                   }
                });
             }
+         }
+      };
+
+      // [Phase 1] 추출 버튼 이벤트
+      document.getElementById('extractBtn').onclick = () => {
+         document.getElementById('jsonOutput').innerText = "데이터 추출 중...";
+         parent.postMessage({ pluginMessage: { type: 'EXTRACT_JSON' } }, '*');
+      };
+
+      // [Phase 1] 클립보드 복사 버튼 이벤트
+      document.getElementById('copyJsonBtn').onclick = () => {
+         const jsonText = document.getElementById('jsonOutput').innerText;
+         if (jsonText && !jsonText.includes("추출할 프레임을 캔버스에서 선택한 후") && !jsonText.includes("데이터 추출 중...")) {
+            const textarea = document.createElement('textarea');
+            textarea.value = jsonText;
+            document.body.appendChild(textarea);
+            textarea.select();
+            document.execCommand('copy');
+            document.body.removeChild(textarea);
+            alert("SSOT JSON이 클립보드에 복사되었습니다!");
          }
       };
 
