@@ -1,4 +1,7 @@
 // --- [Phase 1: SSOT JSON 추출 유틸리티 함수 (Raw Data)] ---
+// [SSOT 표준] width / height: number | "fill" | "hug" 만 허용 ({type:"fixed"} 절대 금지)
+// [SSOT 표준] layout: { mode: "HORIZONTAL"|"VERTICAL", padding: "token.*", spacing: "token.*" }
+
 function reverseTokenizeSpacing(value) {
   if (typeof value !== 'number' || value === 0) return "token.spacing.none";
   if (value <= 4) return "token.spacing.xs";
@@ -9,15 +12,16 @@ function reverseTokenizeSpacing(value) {
   return "token.spacing.xxl";
 }
 
+// [FIXED] 반환값: number | "fill" | "hug" — "fixed" 문자열 절대 반환 안 함
 function getSizingMode(node, axis) {
   if (axis === "HORIZONTAL") {
     if (node.layoutSizingHorizontal === "FILL" || node.layoutGrow === 1) return "fill";
     if (node.layoutSizingHorizontal === "HUG") return "hug";
-    return "fixed";
+    return Math.round(node.width || 100); // 숫자 반환 (Render Engine의 resize() 경로)
   } else {
     if (node.layoutSizingVertical === "FILL" || node.layoutAlign === "STRETCH") return "fill";
     if (node.layoutSizingVertical === "HUG") return "hug";
-    return "fixed";
+    return Math.round(node.height || 100); // 숫자 반환 (Render Engine의 resize() 경로)
   }
 }
 
@@ -48,19 +52,20 @@ function extractNodeToJSON(node) {
   };
 
   if (nodeType === "frame" || nodeType === "container") {
-    json.layout = node.layoutMode === "HORIZONTAL" ? "horizontal" : (node.layoutMode === "VERTICAL" ? "vertical" : "none");
+    // [FIXED] layout 구조: mode 대문자, token 기반 spacing/padding
+    const hasAutoLayout = node.layoutMode === "HORIZONTAL" || node.layoutMode === "VERTICAL";
+    json.layout = {
+      mode: hasAutoLayout ? node.layoutMode : "VERTICAL", // 대문자 강제
+      padding: reverseTokenizeSpacing(Math.max(node.paddingLeft || 0, node.paddingTop || 0)),
+      spacing: reverseTokenizeSpacing(node.itemSpacing || 0)
+    };
+    json.style = {
+      width: getSizingMode(node, "HORIZONTAL"),  // number | "fill" | "hug"
+      height: getSizingMode(node, "VERTICAL")    // number | "fill" | "hug"
+    };
     json.children = [];
     if (node.children && node.children.length > 0) {
       json.children = node.children.map(child => extractNodeToJSON(child));
-    }
-
-    if (node.layoutMode === "HORIZONTAL" || node.layoutMode === "VERTICAL") {
-      json.style = {
-        width: getSizingMode(node, "HORIZONTAL"),
-        height: getSizingMode(node, "VERTICAL"),
-        spacing: reverseTokenizeSpacing(node.itemSpacing),
-        padding: reverseTokenizeSpacing(Math.max(node.paddingLeft || 0, node.paddingTop || 0))
-      };
     }
   }
 
@@ -71,12 +76,12 @@ function extractNodeToJSON(node) {
     }
 
     json.style = json.style || {};
-    json.style.width = getSizingMode(node, "HORIZONTAL");
-    json.style.height = getSizingMode(node, "VERTICAL");
+    json.style.width = getSizingMode(node, "HORIZONTAL");  // number | "fill" | "hug"
+    json.style.height = getSizingMode(node, "VERTICAL");   // number | "fill" | "hug"
 
-    let alignMode = "start";
-    if (node.layoutAlign === "CENTER") alignMode = "center";
-    if (node.layoutAlign === "MAX") alignMode = "end";
+    let alignMode = "MIN"; // ⭐️ START를 MIN으로 변경
+    if (node.layoutAlign === "CENTER") alignMode = "CENTER";
+    if (node.layoutAlign === "MAX") alignMode = "MAX";
 
     json.layoutRules = {
       grow: node.layoutGrow || 0,
@@ -93,116 +98,69 @@ function extractNodeToJSON(node) {
   return json;
 }
 
-// --- [Phase 2: Normalize Engine (데이터 정제 및 의미 보완)] ---
+// --- [Phase 2: Normalize Engine (SSOT 포맷팅 전용 — 구조 조작 금지)] ---
+// 역할: extractNodeToJSON의 raw data를 SSOT 표준 스키마로 포맷팅만 수행.
+// 금지: 트리 구조 변경, 역할 추론, 자동 평탄화 등 결정론적 원칙 위반 로직.
 
-function applyLayoutRules(node) {
-  if (node.type !== 'frame') return node;
-  return Object.assign({}, node, {
-    layout: node.layout || 'vertical',
-    layoutRules: {
-      grow: (node.layoutRules && node.layoutRules.grow) || 0,
-      align: (node.layoutRules && node.layoutRules.align) || 'start',
-      primaryAxisSizing: (node.style && node.style.width === 'fill') ? 'fill' : 'hug',
-      counterAxisSizing: (node.style && node.style.height === 'fill') ? 'fill' : 'hug'
-    }
-  });
+// SSOT 표준 검증: width/height가 허용 타입인지 확인
+function assertValidSize(value, fieldName) {
+  if (value === "fill" || value === "hug") return value;
+  if (typeof value === "number" && !isNaN(value)) return value;
+  console.warn(`[SSOT Warning] ${fieldName} 값 "${value}"은 유효하지 않습니다. "hug"로 fallback.`);
+  return "hug"; // safe fallback
 }
 
-function flattenDepth(node) {
-  if (node.type === 'frame' && node.children && node.children.length === 1) {
-    const child = node.children[0];
-    if (child.type === 'frame' && child.layout === node.layout) {
-      return flattenDepth(Object.assign({}, child, {
-        id: node.id
-      }));
-    }
+// SSOT 표준 검증: layout 객체 구조 보장
+function ensureLayoutObject(layout) {
+  if (!layout || typeof layout !== "object") {
+    return { mode: "VERTICAL", padding: "token.spacing.none", spacing: "token.spacing.none" };
   }
-  return node;
-}
-
-function applySpacingTokens(node) {
-  if (!node.style) return node;
-  const tokenize = (val) => {
-    if (typeof val === 'string' && val.includes('token')) return val;
-    if (!val || val === 0) return 'token.spacing.none';
-    if (val <= 4) return 'token.spacing.xs';
-    if (val <= 8) return 'token.spacing.sm';
-    if (val <= 16) return 'token.spacing.md';
-    if (val <= 24) return 'token.spacing.lg';
-    return 'token.spacing.xl';
+  return {
+    mode: (layout.mode && ["HORIZONTAL", "VERTICAL"].includes(String(layout.mode).toUpperCase()))
+      ? String(layout.mode).toUpperCase()
+      : "VERTICAL",
+    padding: (typeof layout.padding === "string" && layout.padding.includes("token"))
+      ? layout.padding : "token.spacing.none",
+    spacing: (typeof layout.spacing === "string" && layout.spacing.includes("token"))
+      ? layout.spacing : "token.spacing.none"
   };
-  return Object.assign({}, node, {
-    style: Object.assign({}, node.style, {
-      spacing: tokenize(node.style.spacing),
-      padding: tokenize(node.style.padding)
-    })
-  });
 }
 
-function normalizeSize(node) {
-  if (!node.style) return node;
-  const formatSize = (sizeValue) => {
-    if (sizeValue === 'fill' || sizeValue === 'hug') return sizeValue;
-    if (typeof sizeValue === 'number' || !isNaN(Number(sizeValue))) {
-      return { type: 'fixed', value: Number(sizeValue) };
-    }
-    return 'hug';
-  };
-  return Object.assign({}, node, {
-    style: Object.assign({}, node.style, {
-      width: formatSize(node.style.width),
-      height: formatSize(node.style.height)
-    })
-  });
-}
-
-function assignBaseRole(node) {
-  let role = (node.role && node.role !== 'default') ? node.role : 'container';
-  if (node.type === 'text') {
-    role = 'text';
-    const content = node.content || '';
-    if (/^[0-9,]+$/.test(content.trim())) role = 'price';
-    if (['만', '원', '회', '개', '%'].includes(content.trim())) role = 'unit';
-  } else if (node.type === 'image') {
-    role = 'thumbnail';
-  }
-  return Object.assign({}, node, { role: role });
-}
-
-function normalizeTree(rawNode) {
+// 단일 노드를 SSOT 표준 스키마로 포맷팅 (구조 변경 없음)
+function formatNodeToSSOT(rawNode) {
   if (!rawNode) return null;
 
-  let node = normalizeSize(rawNode);
-  node = applySpacingTokens(node);
-  node = applyLayoutRules(node);
-  node = assignBaseRole(node);
+  const node = Object.assign({}, rawNode);
 
-  if (node.children && Array.isArray(node.children)) {
-    node.children = node.children
-      .map(child => normalizeTree(child))
-      .filter(Boolean);
+  // style 포맷팅: width/height 유효성 보장
+  if (node.style) {
+    node.style = Object.assign({}, node.style, {
+      width: assertValidSize(node.style.width, "style.width"),
+      height: assertValidSize(node.style.height, "style.height")
+    });
   }
 
-  node = flattenDepth(node);
+  // layout 포맷팅: frame/container 타입에 대해 표준 layout 객체 보장
+  if (node.type === "frame" || node.type === "container") {
+    node.layout = ensureLayoutObject(node.layout);
+  }
+
+  // content fallback: text 노드의 undefined/null 방어
+  if (node.type === "text") {
+    node.content = (node.content !== undefined && node.content !== null) ? String(node.content) : "";
+  }
+
+  // 자식 노드 재귀 포맷팅 (구조 유지)
+  if (node.children && Array.isArray(node.children)) {
+    node.children = node.children.map(child => formatNodeToSSOT(child)).filter(Boolean);
+  }
 
   return node;
 }
 
-async function enhanceRolesWithAI(node) {
-  const applyAIRoles = (n) => {
-    const updatedNode = Object.assign({}, n);
-    if (n.children) {
-      updatedNode.children = n.children.map(applyAIRoles);
-    }
-    return updatedNode;
-  };
-  return applyAIRoles(node);
-}
-
+// processFigmaJSON: Extract → Format (AI 추론 단계 제거)
 async function processFigmaJSON(rawJSON) {
-  const normalized = normalizeTree(rawJSON);
-  const enhanced = await enhanceRolesWithAI(normalized);
-  return enhanced;
+  return formatNodeToSSOT(rawJSON);
 }
 
 
@@ -391,13 +349,16 @@ async function renderFromSSOT(json) {
 
 // --- [Phase 4: AI Layer - Templateization & Data Binding Engine] ---
 
+// [SSOT Template Registry]
+// 규칙: width/height → number | "fill" | "hug" 만 허용 ({type:"fixed"} 절대 금지)
+// 규칙: layout.mode → 반드시 대문자 ("HORIZONTAL" | "VERTICAL")
 const TEMPLATE_REGISTRY = {
   "product_card": {
     "type": "frame",
     "layout": { "mode": "VERTICAL", "padding": "token.spacing.md", "spacing": "token.spacing.sm" },
     "style": { "width": "hug", "height": "hug" },
     "children": [
-      { "type": "image", "content": "{{imageUrl}}", "style": { "width": { "type": "fixed", "value": 200 }, "height": { "type": "fixed", "value": 200 } } },
+      { "type": "image", "content": "{{imageUrl}}", "style": { "width": 200, "height": 200 } },
       { "type": "text", "content": "{{title}}", "style": { "width": "fill", "height": "hug" } },
       { "type": "text", "content": "{{price}}원", "style": { "width": "fill", "height": "hug" } }
     ]
@@ -405,10 +366,12 @@ const TEMPLATE_REGISTRY = {
   "promotion_banner": {
     "type": "frame",
     "layout": { "mode": "HORIZONTAL", "padding": "token.spacing.lg", "spacing": "token.spacing.md" },
-    "style": { "width": "fill", "height": { "type": "fixed", "value": 120 } },
+    "style": { "width": "fill", "height": 120 },
     "children": [
       {
-        "type": "frame", "layout": { "mode": "VERTICAL", "padding": "token.spacing.none", "spacing": "token.spacing.xs" }, "style": { "width": "fill", "height": "hug" },
+        "type": "frame",
+        "layout": { "mode": "VERTICAL", "padding": "token.spacing.none", "spacing": "token.spacing.xs" },
+        "style": { "width": "fill", "height": "hug" },
         "children": [
           { "type": "text", "content": "{{badge}}", "style": { "width": "hug", "height": "hug" } },
           { "type": "text", "content": "{{headline}}", "style": { "width": "fill", "height": "hug" } }
@@ -422,7 +385,7 @@ const TEMPLATE_REGISTRY = {
     "layout": { "mode": "HORIZONTAL", "padding": "token.spacing.md", "spacing": "token.spacing.md" },
     "style": { "width": "fill", "height": "hug" },
     "children": [
-      { "type": "text", "content": "{{index}}.", "style": { "width": { "type": "fixed", "value": 24 }, "height": "hug" } },
+      { "type": "text", "content": "{{index}}.", "style": { "width": 24, "height": "hug" } },
       { "type": "text", "content": "{{item_name}}", "style": { "width": "fill", "height": "hug" } },
       { "type": "text", "content": "{{status}}", "style": { "width": "hug", "height": "hug" } }
     ]
@@ -707,6 +670,34 @@ async function openUI(targetFrame) {
 
       } else {
         figma.notify("추출할 프레임을 선택해주세요.", { error: true });
+      }
+    }
+
+    // ⭐️ [Phase 5] UI → generateSSOT → renderFromSSOT 파이프라인
+    if (msg.type === 'GENERATE_SSOT') {
+      try {
+        figma.notify("디자인 생성 중...");
+
+        const ssot = generateSSOT(msg.keyword, msg.data);
+        console.log("Generated SSOT:", JSON.stringify(ssot, null, 2));
+
+        const renderedNode = await renderFromSSOT(ssot);
+
+        if (renderedNode) {
+          figma.currentPage.selection = [renderedNode];
+          figma.viewport.scrollAndZoomIntoView([renderedNode]);
+          figma.notify("✨ 디자인 렌더링 완료!");
+        }
+
+      } catch (e) {
+        console.error(e);
+        if (e.message.includes("template") || e.message.includes("Template")) {
+          figma.notify("템플릿 매핑 실패", { error: true });
+        } else if (e.message.includes("render") || e.message.includes("Render")) {
+          figma.notify("렌더링 실패", { error: true });
+        } else {
+          figma.notify("생성 실패: " + e.message, { error: true });
+        }
       }
     }
 
