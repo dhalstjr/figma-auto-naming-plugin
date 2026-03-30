@@ -4,27 +4,30 @@
 <head>
    <style>
       body {
-         font-family: "Inter", sans-serif;
+         font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
          margin: 0;
          padding: 0;
-         background: #f5f5f5;
+         background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
          display: flex;
          flex-direction: column;
          height: 100vh;
+         color: #333;
       }
 
       header {
-         padding: 16px;
-         border-bottom: 1px solid #e5e5e5;
-         font-weight: 600;
-         font-size: 14px;
+         padding: 16px 20px;
+         background: rgba(255, 255, 255, 0.8);
+         backdrop-filter: blur(10px);
+         border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+         font-weight: 700;
+         font-size: 15px;
          position: sticky;
          top: 0;
-         background: #fff;
-         z-index: 10;
+         z-index: 100;
          display: flex;
          justify-content: space-between;
          align-items: center;
+         box-shadow: 0 2px 10px rgba(0,0,0,0.03);
       }
 
       .content {
@@ -78,15 +81,21 @@
       .field {
          display: flex;
          flex-direction: column;
-         gap: 8px;
+         gap: 12px;
          background: #fff;
-         padding: 12px;
-         border-radius: 8px;
-         border: 1px solid #e6e6e6;
-         box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
+         padding: 16px;
+         border-radius: 12px;
+         border: 1px solid rgba(0, 0, 0, 0.05);
+         box-shadow: 0 4px 12px rgba(0, 0, 0, 0.04);
          box-sizing: border-box;
          width: 100%;
-         transition: border-color 0.2s;
+         transition: transform 0.2s, box-shadow 0.2s, border-color 0.2s;
+      }
+
+      .field:hover {
+         transform: translateY(-2px);
+         box-shadow: 0 8px 20px rgba(0, 0, 0, 0.08);
+         border-color: rgba(24, 160, 251, 0.3);
       }
 
       .label-row {
@@ -238,14 +247,21 @@
       }
 
       .top-level-card {
-         background: #fcfcfc;
-         border: 1px solid #eaeaea;
-         border-radius: 8px;
-         padding: 16px;
-         margin-bottom: 20px;
-         box-shadow: 0 2px 4px rgba(0, 0, 0, 0.02);
+         background: rgba(255, 255, 255, 0.7);
+         backdrop-filter: blur(5px);
+         border: 1px solid rgba(255, 255, 255, 0.5);
+         border-radius: 16px;
+         padding: 20px;
+         margin-bottom: 24px;
+         box-shadow: 0 10px 30px rgba(0, 0, 0, 0.05);
          box-sizing: border-box;
          width: 100%;
+         transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      }
+      
+      .top-level-card:hover {
+         background: rgba(255, 255, 255, 0.9);
+         box-shadow: 0 15px 40px rgba(0, 0, 0, 0.1);
       }
 
       .legend {
@@ -359,7 +375,7 @@
       .snackbar-btn:hover {
          text-decoration: underline;
       }
-      /* [Phase 1] JSON 추출 섹션 스타일 */
+
       .phase1-section {
          padding: 16px;
          background: #fbfbfb;
@@ -406,6 +422,42 @@
          background: #555;
          border-radius: 4px;
       }
+
+      .dynamic-form-field {
+         display: flex;
+         flex-direction: column;
+         gap: 4px;
+      }
+
+      .dynamic-form-field label {
+         font-size: 11px;
+         font-weight: 600;
+         color: #555;
+      }
+
+      .dynamic-form-field label .required-mark {
+         color: #e53935;
+         margin-left: 2px;
+      }
+
+      .template-select {
+         width: 100%;
+         border: 1px solid #e5e5e5;
+         padding: 9px 10px;
+         border-radius: 8px;
+         font-size: 12px;
+         font-family: inherit;
+         background: #fff;
+         color: #333;
+         outline: none;
+         cursor: pointer;
+         transition: border-color 0.2s;
+         box-sizing: border-box;
+      }
+
+      .template-select:focus {
+         border-color: #18A0FB;
+      }
    </style>
 </head>
 
@@ -427,42 +479,31 @@
       <pre class="json-output-container"><code id="jsonOutput">추출할 프레임을 캔버스에서 선택한 후 'JSON 추출하기' 버튼을 눌러주세요.</code></pre>
    </div>
 
-   <!-- [Phase 5] AI 디자인 자동 생성기 섹션 -->
-   <div class="phase1-section" style="border-top: none;">
-      <div class="phase1-header">
+   <!-- [Phase 5] AI 디자인 자동 생성기 섹션 - Dynamic Form -->
+   <div class="phase1-section" style="border-top: none; background: rgba(255, 255, 255, 0.4);">
+      <div class="phase1-header" style="margin-bottom: 8px;">
          <span>🚀 AI 디자인 자동 생성기 (Phase 5)</span>
       </div>
 
-      <input
-         id="keyword-input"
-         type="text"
-         placeholder="템플릿 키워드 (예: 상품, 배너, 리스트)"
-      />
+      <div style="display: flex; flex-direction: column; gap: 10px;">
+         <select id="template-select" class="template-select">
+            <option value="">-- 템플릿 선택 --</option>
+            <option value="상품">🛍 상품 카드</option>
+            <option value="배너">📢 홍보 배너</option>
+            <option value="리스트">📋 목록 UI</option>
+            <option value="헤더">🔝 헤더</option>
+         </select>
 
-      <textarea
-         id="data-input"
-         placeholder='{"title":"상품명", "price":"10000", "imageUrl":""}'
-         style="
-            width: 100%;
-            height: 80px;
-            padding: 8px 10px;
-            border: 1px solid #e5e5e5;
-            border-radius: 6px;
-            box-sizing: border-box;
-            font-size: 12px;
-            background: #fafafa;
-            resize: vertical;
-            font-family: inherit;
-         "
-      ></textarea>
+         <div id="dynamic-fields-container" style="display: flex; flex-direction: column; gap: 8px;"></div>
 
-      <button
-         id="btn-generate"
-         class="btn-action btn-update"
-         style="width: 100%; justify-content: center; padding: 10px; font-size: 12px;"
-      >
-         ✨ JSON 데이터로 디자인 생성하기
-      </button>
+         <button
+            id="btn-generate"
+            class="btn-action btn-update"
+            style="width: 100%; justify-content: center; padding: 14px; font-size: 13px; border-radius: 10px; box-shadow: 0 4px 12px rgba(24, 160, 251, 0.2); display: none;"
+         >
+            ✨ 디자인 생성하기
+         </button>
+      </div>
    </div>
 
    <div class="content" id="form-container">
@@ -487,6 +528,106 @@
       let expandedGroups = new Set();
       let seenGroups = new Set();
 
+      const TEMPLATE_FIELD_SCHEMA = {
+         "상품": [
+            { key: "imageUrl", label: "이미지 URL", type: "text", required: true, placeholder: "https://..." },
+            { key: "title", label: "상품명", type: "text", required: true, placeholder: "예: 셀불린 모공 에센스" },
+            { key: "price", label: "가격 (숫자만)", type: "text", required: true, placeholder: "예: 39000" }
+         ],
+         "배너": [
+            { key: "badge", label: "배지", type: "text", required: true, placeholder: "예: 기간 한정" },
+            { key: "headline", label: "헤드라인", type: "text", required: true, placeholder: "예: 바로그의원 봄맞이 이벤트" },
+            { key: "cta_text", label: "버튼 텍스트", type: "text", required: true, placeholder: "예: 예약하기" }
+         ],
+         "리스트": [
+            { key: "index", label: "순번", type: "text", required: true, placeholder: "예: 1" },
+            { key: "item_name", label: "항목명", type: "text", required: true, placeholder: "내용 입력" },
+            { key: "status", label: "상태", type: "text", required: false, placeholder: "예: 완료" }
+         ],
+         "헤더": [
+            { key: "logoUrl", label: "로고 이미지 URL", type: "text", required: true, placeholder: "https://..." },
+            { key: "title", label: "타이틀", type: "text", required: true, placeholder: "페이지명" }
+         ]
+      };
+
+      function renderDynamicForm(templateKey) {
+         const container = document.getElementById('dynamic-fields-container');
+         const generateBtn = document.getElementById('btn-generate');
+         container.innerHTML = '';
+
+         if (!templateKey || !TEMPLATE_FIELD_SCHEMA[templateKey]) {
+            generateBtn.style.display = 'none';
+            return;
+         }
+
+         const schema = TEMPLATE_FIELD_SCHEMA[templateKey];
+         schema.forEach(function(field) {
+            const wrapper = document.createElement('div');
+            wrapper.className = 'dynamic-form-field';
+
+            const lbl = document.createElement('label');
+            lbl.htmlFor = 'dyn-' + field.key;
+            lbl.textContent = field.label;
+            if (field.required) {
+               const mark = document.createElement('span');
+               mark.className = 'required-mark';
+               mark.textContent = '*';
+               lbl.appendChild(mark);
+            }
+
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.id = 'dyn-' + field.key;
+            input.dataset.key = field.key;
+            input.dataset.required = field.required ? 'true' : 'false';
+            input.placeholder = field.placeholder || '';
+
+            wrapper.appendChild(lbl);
+            wrapper.appendChild(input);
+            container.appendChild(wrapper);
+         });
+
+         generateBtn.style.display = 'flex';
+      }
+
+      document.getElementById('template-select').onchange = function() {
+         renderDynamicForm(this.value);
+      };
+
+      document.getElementById('btn-generate').onclick = function() {
+         const templateKey = document.getElementById('template-select').value;
+         if (!templateKey) {
+            alert('템플릿을 선택해주세요.');
+            return;
+         }
+
+         const inputs = document.querySelectorAll('#dynamic-fields-container input[data-key]');
+         const formData = {};
+         let valid = true;
+
+         inputs.forEach(function(input) {
+            if (input.dataset.required === 'true' && input.value.trim() === '') {
+               const schema = TEMPLATE_FIELD_SCHEMA[templateKey];
+               const fieldDef = schema.find(function(f) { return f.key === input.dataset.key; });
+               const labelText = fieldDef ? fieldDef.label : input.dataset.key;
+               alert(labelText + ' 필드를 입력해주세요.');
+               valid = false;
+            } else {
+               formData[input.dataset.key] = input.value.trim();
+            }
+         });
+
+         if (!valid) return;
+
+         parent.postMessage({
+            pluginMessage: {
+               type: 'GENERATE_SSOT',
+               keyword: templateKey,
+               data: formData
+            }
+         }, '*');
+      };
+
       function showSnackbar(id) {
          lastDeletedId = id;
          const sb = document.getElementById('undo-snackbar');
@@ -503,12 +644,41 @@
          }
       };
 
+      async function fetchImageBytes(url) {
+         try {
+            const response = await fetch(url);
+            const buffer = await response.arrayBuffer();
+            return new Uint8Array(buffer);
+         } catch (e) {
+            console.error("Failed to fetch image:", url, e);
+            return null;
+         }
+      }
+
       window.onmessage = async (event) => {
          const msg = event.data.pluginMessage;
          
-         // [Phase 1] JSON 추출 데이터 수신
          if (msg.type === 'extracted-json') {
             document.getElementById('jsonOutput').innerText = JSON.stringify(msg.data, null, 2);
+         }
+
+         if (msg.type === 'PROCESS_IMAGES') {
+            const ssot = msg.data;
+            
+            async function traverseAndFetch(node) {
+               if (node.type === 'image' && node.content && node.content.startsWith('http')) {
+                  const bytes = await fetchImageBytes(node.content);
+                  if (bytes) node.imageData = bytes;
+               }
+               if (node.children) {
+                  for (const child of node.children) {
+                     await traverseAndFetch(child);
+                  }
+               }
+            }
+
+            await traverseAndFetch(ssot);
+            parent.postMessage({ pluginMessage: { type: 'RENDER_FINAL_SSOT', data: ssot } }, '*');
          }
 
          if (msg.type === 'init-fields') {
@@ -544,13 +714,11 @@
          }
       };
 
-      // [Phase 1] 추출 버튼 이벤트
       document.getElementById('extractBtn').onclick = () => {
          document.getElementById('jsonOutput').innerText = "데이터 추출 중...";
          parent.postMessage({ pluginMessage: { type: 'EXTRACT_JSON' } }, '*');
       };
 
-      // [Phase 1] 클립보드 복사 버튼 이벤트
       document.getElementById('copyJsonBtn').onclick = () => {
          const jsonText = document.getElementById('jsonOutput').innerText;
          if (jsonText && !jsonText.includes("추출할 프레임을 캔버스에서 선택한 후") && !jsonText.includes("데이터 추출 중...")) {
@@ -572,7 +740,7 @@
 
       function renderFields() {
          const container = document.getElementById('form-container');
-         const savedScrollTop = container.scrollTop || 0; // 스크롤 기억
+         const savedScrollTop = container.scrollTop || 0;
 
          container.innerHTML = '';
 
@@ -682,7 +850,7 @@
                groupDiv.appendChild(fieldsContainer);
                container.appendChild(groupDiv);
 
-            } else if (node.type === "FIELD") { // 버그 픽스 지점!
+            } else if (node.type === "FIELD") {
                renderField(node, container);
             }
          });
@@ -699,20 +867,20 @@
          const label = document.createElement('span');
          label.className = 'semantic-label';
 
-         if (node.fieldType === "TEXT") { // 버그 픽스 지점!
+         if (node.fieldType === "TEXT") {
             const typeBadge = document.createElement('span');
             typeBadge.className = 'badge badge-text';
-            typeBadge.innerText = 'TXT';
+            typeBadge.innerText = '텍스트';
             label.appendChild(typeBadge);
          } else if (node.fieldType === "IMAGE") {
             const typeBadge = document.createElement('span');
             typeBadge.className = 'badge badge-image';
-            typeBadge.innerText = 'IMG';
+            typeBadge.innerText = '이미지';
             label.appendChild(typeBadge);
          }
 
          const lblText = document.createElement('span');
-         lblText.innerText = node.label || "텍스트"; // 버그 픽스 지점!
+         lblText.innerText = node.label || "텍스트";
          label.appendChild(lblText);
          labelRow.appendChild(label);
 
@@ -834,51 +1002,6 @@
 
       document.getElementById('btn-close').onclick = () => {
          parent.postMessage({ pluginMessage: { type: 'close' } }, '*');
-      };
-
-      // [Phase 5] AI 디자인 생성 버튼
-      document.getElementById('btn-generate').onclick = () => {
-         const keywordValue = document.getElementById('keyword-input').value;
-         const textValue = document.getElementById('data-input').value;
-
-         if (!keywordValue || keywordValue.trim() === "") {
-            alert("키워드를 입력해주세요.");
-            return;
-         }
-
-         if (!textValue || textValue.trim() === "") {
-            alert("JSON 데이터를 입력해주세요.");
-            return;
-         }
-
-         let parsedData;
-         try {
-            parsedData = JSON.parse(textValue);
-
-            if (
-               typeof parsedData !== "object" ||
-               parsedData === null ||
-               Array.isArray(parsedData)
-            ) {
-               throw new Error("JSON은 { key: value } 객체 형태여야 합니다.");
-            }
-
-            if (Object.keys(parsedData).length === 0) {
-               throw new Error("데이터가 비어 있습니다.");
-            }
-
-         } catch (e) {
-            alert("JSON 오류: " + e.message);
-            return;
-         }
-
-         parent.postMessage({
-            pluginMessage: {
-               type: "GENERATE_SSOT",
-               keyword: keywordValue,
-               data: parsedData
-            }
-         }, "*");
       };
    </script>
 </body>

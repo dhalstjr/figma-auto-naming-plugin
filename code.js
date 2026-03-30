@@ -12,16 +12,16 @@ function reverseTokenizeSpacing(value) {
   return "token.spacing.xxl";
 }
 
-// [FIXED] 반환값: number | "fill" | "hug" — "fixed" 문자열 절대 반환 안 함
+// [확정] 반환값: 숫자 | "fill" | "hug" — "fixed" 문자열은 절대 반환하지 않습니다.
 function getSizingMode(node, axis) {
   if (axis === "HORIZONTAL") {
     if (node.layoutSizingHorizontal === "FILL" || node.layoutGrow === 1) return "fill";
     if (node.layoutSizingHorizontal === "HUG") return "hug";
-    return Math.round(node.width || 100); // 숫자 반환 (Render Engine의 resize() 경로)
+    return Math.round(node.width || 100); // 숫자 반환 (렌더링 엔진의 resize() 처리용)
   } else {
     if (node.layoutSizingVertical === "FILL" || node.layoutAlign === "STRETCH") return "fill";
     if (node.layoutSizingVertical === "HUG") return "hug";
-    return Math.round(node.height || 100); // 숫자 반환 (Render Engine의 resize() 경로)
+    return Math.round(node.height || 100); // 숫자 반환 (렌더링 엔진의 resize() 처리용)
   }
 }
 
@@ -106,8 +106,8 @@ function extractNodeToJSON(node) {
 function assertValidSize(value, fieldName) {
   if (value === "fill" || value === "hug") return value;
   if (typeof value === "number" && !isNaN(value)) return value;
-  console.warn(`[SSOT Warning] ${fieldName} 값 "${value}"은 유효하지 않습니다. "hug"로 fallback.`);
-  return "hug"; // safe fallback
+  console.warn(`[SSOT 경고] ${fieldName} 값 "${value}"은 유효하지 않습니다. "hug"로 대체합니다.`);
+  return "hug"; // 안전한 대체값
 }
 
 // SSOT 표준 검증: layout 객체 구조 보장
@@ -217,7 +217,12 @@ async function createText(node) {
 
 function createImage(node) {
   const rect = figma.createRectangle();
-  rect.fills = [{ type: 'SOLID', color: { r: 0.8, g: 0.8, b: 0.8 } }];
+  if (node.imageData) {
+    const image = figma.createImage(node.imageData);
+    rect.fills = [{ type: 'IMAGE', imageHash: image.hash, scaleMode: 'FILL' }];
+  } else {
+    rect.fills = [{ type: 'SOLID', color: { r: 0.8, g: 0.8, b: 0.8 } }];
+  }
   return rect;
 }
 
@@ -340,7 +345,7 @@ async function renderFromSSOT(json) {
     return null;
   } catch (error) {
     if (figma && figma.notify) {
-      figma.notify("Error: " + error.message, { error: true });
+      figma.notify("오류 발생: " + error.message, { error: true });
     }
     return null;
   }
@@ -349,8 +354,8 @@ async function renderFromSSOT(json) {
 
 // --- [Phase 4: AI Layer - Templateization & Data Binding Engine] ---
 
-// [SSOT Template Registry]
-// 규칙: width/height → number | "fill" | "hug" 만 허용 ({type:"fixed"} 절대 금지)
+// [SSOT 템플릿 저장소]
+// 규칙: width/height → 숫자 | "fill" | "hug" 만 허용 ({type:"fixed"} 절대 금지)
 // 규칙: layout.mode → 반드시 대문자 ("HORIZONTAL" | "VERTICAL")
 const TEMPLATE_REGISTRY = {
   "product_card": {
@@ -389,6 +394,16 @@ const TEMPLATE_REGISTRY = {
       { "type": "text", "content": "{{item_name}}", "style": { "width": "fill", "height": "hug" } },
       { "type": "text", "content": "{{status}}", "style": { "width": "hug", "height": "hug" } }
     ]
+  },
+  "header_simple": {
+    "type": "frame",
+    "layout": { "mode": "HORIZONTAL", "padding": "token.spacing.md", "spacing": "token.spacing.md" },
+    "style": { "width": "fill", "height": 64 },
+    "children": [
+      { "type": "image", "content": "{{logoUrl}}", "style": { "width": 32, "height": 32 } },
+      { "type": "text", "content": "{{title}}", "style": { "width": "fill", "height": "hug" } },
+      { "type": "text", "content": "메뉴", "style": { "width": "hug", "height": "hug" } }
+    ]
   }
 };
 
@@ -397,7 +412,8 @@ function selectTemplateByRule(inputKeyword) {
   if (keyword.includes("상품") || keyword.includes("product")) return "product_card";
   if (keyword.includes("배너") || keyword.includes("banner")) return "promotion_banner";
   if (keyword.includes("리스트") || keyword.includes("list") || keyword.includes("목록")) return "list_ui";
-  return "product_card"; // Default Fallback
+  if (keyword.includes("헤더") || keyword.includes("header")) return "header_simple";
+  return "product_card"; // 기본값
 }
 
 function bindDataToTemplate(templateObj, data) {
@@ -430,6 +446,92 @@ function generateSSOT(keyword, extractedData) {
   return bindDataToTemplate(template, extractedData);
 }
 
+function validateSSOT(node) {
+  if (!node || typeof node !== "object") throw new Error("Invalid SSOT node");
+
+  if (node.type === "frame" || node.type === "container") {
+    if (!node.layout || !node.layout.mode) throw new Error("Missing layout.mode");
+    if (!Array.isArray(node.children)) node.children = [];
+  }
+
+  if (node.children !== undefined && !Array.isArray(node.children)) {
+    throw new Error("Invalid children");
+  }
+
+  if (node.style) {
+    var width = node.style.width;
+    var height = node.style.height;
+
+    var valid = function(v) {
+      return typeof v === "number" || v === "fill" || v === "hug";
+    };
+
+    if (width !== undefined && !valid(width)) throw new Error("Invalid width");
+    if (height !== undefined && !valid(height)) throw new Error("Invalid height");
+  }
+
+  if (node.children && Array.isArray(node.children)) {
+    for (var i = 0; i < node.children.length; i++) {
+      validateSSOT(node.children[i]);
+    }
+  }
+
+  return node;
+}
+
+function ensureImage(node) {
+  if (node.type === "image") {
+    var val = String(node.content || "").trim();
+
+    if (!val || (val.indexOf("http://") !== 0 && val.indexOf("https://") !== 0)) {
+      node.content = "https://via.placeholder.com/300";
+    }
+  }
+
+  if (node.children && Array.isArray(node.children)) {
+    for (var i = 0; i < node.children.length; i++) {
+      ensureImage(node.children[i]);
+    }
+  }
+}
+
+function deepFreeze(obj, seen) {
+  if (!seen) seen = new Set();
+  if (!obj || typeof obj !== "object" || seen.has(obj)) return obj;
+
+  seen.add(obj);
+  Object.freeze(obj);
+
+  var keys = Object.keys(obj);
+  for (var i = 0; i < keys.length; i++) {
+    var val = obj[keys[i]];
+    if (val && typeof val === "object") {
+      deepFreeze(val, seen);
+    }
+  }
+
+  return obj;
+}
+
+function handleError(e) {
+  var msg = (e.message || "").toLowerCase();
+
+  if (msg.indexOf("template") !== -1) return "템플릿 매핑 실패";
+
+  if (
+    msg.indexOf("layout") !== -1 ||
+    msg.indexOf("width") !== -1 ||
+    msg.indexOf("height") !== -1 ||
+    msg.indexOf("invalid ssot") !== -1 ||
+    msg.indexOf("children") !== -1
+  ) {
+    return "SSOT 구조 오류";
+  }
+
+  if (msg.indexOf("image") !== -1) return "이미지 처리 실패";
+
+  return "생성 실패: " + e.message;
+}
 
 // --- [UI 통신 및 플러그인 초기화 (Main Logic)] ---
 
@@ -673,32 +775,54 @@ async function openUI(targetFrame) {
       }
     }
 
-    // ⭐️ [Phase 5] UI → generateSSOT → renderFromSSOT 파이프라인
-    if (msg.type === 'GENERATE_SSOT') {
+    // ⭐️ [Phase 5] UI → generateSSOT → UI (Image Fetch) → renderFromSSOT
+    if (msg.type === "GENERATE_SSOT") {
       try {
         figma.notify("디자인 생성 중...");
 
-        const ssot = generateSSOT(msg.keyword, msg.data);
-        console.log("Generated SSOT:", JSON.stringify(ssot, null, 2));
+        if (!msg.keyword || typeof msg.keyword !== "string") {
+          throw new Error("Invalid keyword");
+        }
 
-        const renderedNode = await renderFromSSOT(ssot);
+        if (!msg.data || typeof msg.data !== "object" || Array.isArray(msg.data)) {
+          throw new Error("Invalid input data");
+        }
+
+        if (msg.data.style) delete msg.data.style;
+
+        var ssot = generateSSOT(msg.keyword, msg.data);
+        if (!ssot) throw new Error("Template not found");
+
+        ssot = validateSSOT(ssot);
+        ensureImage(ssot);
+        deepFreeze(ssot);
+
+        var renderedNode = await renderFromSSOT(ssot);
 
         if (renderedNode) {
           figma.currentPage.selection = [renderedNode];
           figma.viewport.scrollAndZoomIntoView([renderedNode]);
-          figma.notify("✨ 디자인 렌더링 완료!");
+          figma.notify("✨ 렌더링 완료 (검증 통과)");
         }
 
       } catch (e) {
         console.error(e);
-        if (e.message.includes("template") || e.message.includes("Template")) {
-          figma.notify("템플릿 매핑 실패", { error: true });
-        } else if (e.message.includes("render") || e.message.includes("Render")) {
-          figma.notify("렌더링 실패", { error: true });
-        } else {
-          figma.notify("생성 실패: " + e.message, { error: true });
-        }
+        figma.notify(handleError(e), { error: true });
       }
+    }
+
+    if (msg.type === 'RENDER_FINAL_SSOT') {
+       try {
+          figma.notify("디자인 렌더링 시작...");
+          const renderedNode = await renderFromSSOT(msg.data);
+          if (renderedNode) {
+             figma.currentPage.selection = [renderedNode];
+             figma.viewport.scrollAndZoomIntoView([renderedNode]);
+             figma.notify("✨ 디자인 렌더링 완료!");
+          }
+       } catch (e) {
+          figma.notify("렌더링 오류", { error: true });
+       }
     }
 
     if (msg.type === 'close') figma.closePlugin();
